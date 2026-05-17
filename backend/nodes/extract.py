@@ -3,6 +3,7 @@ import re
 from pydantic import BaseModel, Field
 from langchain_openai import ChatOpenAI
 
+
 def _model_name() -> str:
     return os.getenv("OPENAI_MODEL_NAME", "gpt-4o")
 
@@ -12,7 +13,7 @@ def get_llm():
         api_key=os.getenv("OPENAI_API_KEY", "dummy"),
         model=_model_name(),
         base_url=os.getenv("OPENAI_API_BASE"),
-        temperature=0
+        temperature=0,
     )
 
 
@@ -49,19 +50,23 @@ def _heuristic_founder(markdown_content: str) -> dict | None:
             }
     return None
 
+
 class FounderExtraction(BaseModel):
     founder_name: str | None = Field(description="Name of the founder or CEO")
     linkedin: str | None = Field(description="LinkedIn URL of the founder")
     confidence: float = Field(description="Confidence score between 0.0 and 1.0")
 
+
 class ServicesExtraction(BaseModel):
     services: list[str] = Field(description="List of services provided by the company")
+
 
 class SignalsExtraction(BaseModel):
     signals: list[str] = Field(description="List of recent news, signals, or client case studies")
 
+
 async def extract_founder_node(markdown_content: str) -> dict:
-    """Extracts founder details in parallel using native Langchain."""
+    """Extract founder details with structured LLM output and heuristics fallback."""
     heuristic = _heuristic_founder(markdown_content)
     if heuristic:
         return heuristic
@@ -81,8 +86,9 @@ async def extract_founder_node(markdown_content: str) -> dict:
         print(f"Founder extraction failed: {e}")
         return {"founder_name": None, "linkedin": None, "confidence": 0.0}
 
+
 async def extract_services_node(markdown_content: str) -> dict:
-    """Extracts company services in parallel."""
+    """Extract company services with structured output."""
     llm = get_llm().with_structured_output(ServicesExtraction, method="function_calling")
     prompt = f"Extract a concise list of services provided by the company from the following markdown.\n\n{markdown_content[:22000]}"
     try:
@@ -92,8 +98,9 @@ async def extract_services_node(markdown_content: str) -> dict:
         print(f"Services extraction failed: {e}")
         return {"services": []}
 
+
 async def extract_signals_node(markdown_content: str) -> dict:
-    """Extracts recent signals and news in parallel."""
+    """Extract recent signals and news with structured output."""
     llm = get_llm().with_structured_output(SignalsExtraction, method="function_calling")
     prompt = (
         "Extract recent signals, news, client wins, case studies, launches, or hiring indicators "

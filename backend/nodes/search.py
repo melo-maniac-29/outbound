@@ -1,9 +1,12 @@
 import os
+import re
 from urllib.parse import urlparse
 from tavily import TavilyClient
 
 BLOCKED_DOMAINS = {
     "apple.com",
+    "open.spotify.com",
+    "spotify.com",
     "prnewswire.com",
     "practicalecommerce.com",
     "youtube.com",
@@ -43,7 +46,16 @@ def infer_company_name(title: str | None, domain: str) -> str | None:
     return inferred
 
 
-def is_company_candidate(domain: str, url: str) -> bool:
+def normalize_token(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "", value.lower())
+
+
+def is_brand_query(query: str) -> bool:
+    tokens = [token for token in query.split() if token]
+    return len(tokens) == 1 and len(query) <= 24 and not query.startswith("http")
+
+
+def is_company_candidate(domain: str, url: str, query: str | None = None, title: str | None = None) -> bool:
     if not domain:
         return False
 
@@ -55,12 +67,33 @@ def is_company_candidate(domain: str, url: str) -> bool:
     if normalized_domain.endswith(blocked_suffixes):
         return False
 
+    blocked_subdomains = (
+        ".spotify.com",
+        ".youtube.com",
+        ".linkedin.com",
+        ".facebook.com",
+        ".instagram.com",
+        ".x.com",
+        ".twitter.com",
+    )
+    if normalized_domain.endswith(blocked_subdomains):
+        return False
+
     if normalized_domain.startswith(("careers.", "jobs.", "podcasts.")):
         return False
 
     parsed = urlparse(url or "")
     lowered_url = (url or "").lower()
     path_parts = [part for part in parsed.path.split("/") if part]
+
+    if query and is_brand_query(query):
+        query_token = normalize_token(query)
+        domain_token = normalize_token(normalized_domain)
+        if query_token and query_token not in domain_token:
+            return False
+        brand_allowed_paths = {"about", "about-us", "team", "leadership", "contact", "services", "work", "pages", ""}
+        if path_parts and path_parts[0] not in brand_allowed_paths:
+            return False
     blocked_markers = (
         "/blog/",
         "/blogs/",
@@ -88,15 +121,29 @@ def is_company_candidate(domain: str, url: str) -> bool:
     return True
 
 def query_variants(query: str) -> list[str]:
+    if is_brand_query(query):
+        return [
+            query,
+            f'"{query}" official site',
+            f'"{query}" company',
+            f'"{query}" contact',
+        ]
     return [
         query,
-        f"{query} agency website founder",
-        f"{query} leadership team agency",
-        f"{query} boutique agency contact",
+        f"{query} company",
+        f"{query} official site",
+        f"{query} contact",
+        f"{query} team",
+        f"{query} about",
     ]
 
 
-def search_node(state_or_query, max_companies: int = 5, max_attempts: int = 4) -> dict:
+def search_node(
+    state_or_query,
+    max_companies: int = 5,
+    max_attempts: int = 4,
+    exclude_domains: list[str] | set[str] | None = None,
+) -> dict:
     """
     Search discovery using Tavily.
     Input: search string
@@ -107,16 +154,20 @@ def search_node(state_or_query, max_companies: int = 5, max_attempts: int = 4) -
     # If called within a graph with LeadState, it might extract the query.
     # Otherwise, it can be called directly to generate leads.
     query = state_or_query.search_query if hasattr(state_or_query, 'search_query') else state_or_query
+    original_query = query.strip() if isinstance(query, str) else query
     
     # We want to find company websites
-    if not api_key or api_key == "dummy" or not query:
+    if not api_key or api_key == "dummy" or not original_query:
         return {"discovered_urls": []}
 
     client = TavilyClient(api_key=api_key)
     urls = []
     seen_domains = set()
+    excluded = set()
+    if exclude_domains:
+        excluded = {normalize_url(domain).lower().removeprefix("www.") for domain in exclude_domains if domain}
 
-    for variant in query_variants(query)[:max_attempts]:
+    for variant in query_variants(original_query)[:max_attempts]:
         try:
             response = client.search(
                 query=variant,
@@ -130,17 +181,25 @@ def search_node(state_or_query, max_companies: int = 5, max_attempts: int = 4) -
         for r in response.get("results", []):
             url = r.get("url")
             domain = normalize_url(url)
+            normalized_domain = domain.lower().removeprefix("www.")
+            title = r.get("title")
 
-            if not is_company_candidate(domain, url):
+            if not is_company_candidate(domain, url, query=original_query, title=title):
                 continue
 
-            if domain and domain not in seen_domains:
+            if not domain:
+                continue
+
+            if normalized_domain in excluded:
+                continue
+
+            if domain not in seen_domains:
                 seen_domains.add(domain)
                 urls.append({
                     "source_url": url,
                     "domain": domain,
-                    "title": r.get("title"),
-                    "company_name": infer_company_name(r.get("title"), domain),
+                    "title": title,
+                    "company_name": infer_company_name(title, domain),
                 })
                 if len(urls) >= max_companies:
                     return {"discovered_urls": urls}

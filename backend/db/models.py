@@ -53,6 +53,8 @@ def init_db():
                     source_type TEXT NOT NULL,
                     status TEXT NOT NULL,
                     error TEXT,
+                    stop_requested BOOLEAN NOT NULL DEFAULT FALSE,
+                    stopped_at TIMESTAMPTZ,
                     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
                 )
@@ -143,6 +145,32 @@ def init_db():
                 """,
                 (json.dumps({"text": DEFAULT_DRAFT_SYSTEM_PROMPT}),),
             )
+            cursor.execute(
+                """
+                INSERT INTO app_settings (key, value, updated_at)
+                VALUES ('search_dedupe_across_db', %s::jsonb, NOW())
+                ON CONFLICT (key) DO NOTHING
+                """,
+                (json.dumps({"text": "true"}),),
+            )
+            cursor.execute(
+                """
+                INSERT INTO app_settings (key, value, updated_at)
+                VALUES ('search_bucket_rounds', %s::jsonb, NOW())
+                ON CONFLICT (key) DO NOTHING
+                """,
+                (json.dumps({"text": "6"}),),
+            )
+            cursor.execute(
+                """
+                INSERT INTO app_settings (key, value, updated_at)
+                VALUES ('search_variant_limit', %s::jsonb, NOW())
+                ON CONFLICT (key) DO NOTHING
+                """,
+                (json.dumps({"text": "4"}),),
+            )
+            cursor.execute("ALTER TABLE search_runs ADD COLUMN IF NOT EXISTS stop_requested BOOLEAN NOT NULL DEFAULT FALSE")
+            cursor.execute("ALTER TABLE search_runs ADD COLUMN IF NOT EXISTS stopped_at TIMESTAMPTZ")
         conn.commit()
 
 
@@ -224,9 +252,9 @@ def create_run(run_id: str, query: str, requested_companies: int, source_type: s
             cursor.execute(
                 """
                 INSERT INTO search_runs (
-                    run_id, query, requested_companies, source_type, status, created_at, updated_at
+                    run_id, query, requested_companies, source_type, status, stop_requested, created_at, updated_at
                 ) VALUES (
-                    %(run_id)s, %(query)s, %(requested_companies)s, %(source_type)s, %(status)s, NOW(), NOW()
+                    %(run_id)s, %(query)s, %(requested_companies)s, %(source_type)s, %(status)s, FALSE, NOW(), NOW()
                 )
                 RETURNING *
                 """,
@@ -268,14 +296,24 @@ def finalize_run(run_id: str, status: str, error: str | None = None):
     update_run_counts(run_id)
     with get_connection() as conn:
         with conn.cursor() as cursor:
-            cursor.execute(
-                """
-                UPDATE search_runs
-                SET status = %s, error = %s, updated_at = NOW()
-                WHERE run_id = %s
-                """,
-                (status, error, run_id),
-            )
+            if status == "STOPPED":
+                cursor.execute(
+                    """
+                    UPDATE search_runs
+                    SET status = %s, error = %s, stop_requested = TRUE, stopped_at = COALESCE(stopped_at, NOW()), updated_at = NOW()
+                    WHERE run_id = %s
+                    """,
+                    (status, error, run_id),
+                )
+            else:
+                cursor.execute(
+                    """
+                    UPDATE search_runs
+                    SET status = %s, error = %s, updated_at = NOW()
+                    WHERE run_id = %s
+                    """,
+                    (status, error, run_id),
+                )
         conn.commit()
 
 
@@ -292,6 +330,51 @@ def touch_run(run_id: str):
                 (run_id,),
             )
         conn.commit()
+
+
+def request_run_stop(run_id: str) -> dict[str, Any] | None:
+    init_db()
+    with get_connection() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE search_runs
+                SET stop_requested = TRUE, status = 'STOPPED', stopped_at = COALESCE(stopped_at, NOW()), updated_at = NOW()
+                WHERE run_id = %s
+                RETURNING *
+                """,
+                (run_id,),
+            )
+            row = cursor.fetchone()
+        conn.commit()
+    return row
+
+
+def delete_run(run_id: str, purge_leads: bool = True) -> bool:
+    init_db()
+    with get_connection() as conn:
+        with conn.cursor() as cursor:
+            if purge_leads:
+                cursor.execute("DELETE FROM leads WHERE run_id = %s", (run_id,))
+            cursor.execute("DELETE FROM search_runs WHERE run_id = %s", (run_id,))
+            deleted = cursor.rowcount > 0
+        conn.commit()
+    return deleted
+
+
+def delete_lead(lead_id: str) -> bool:
+    init_db()
+    with get_connection() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("SELECT run_id FROM leads WHERE lead_id = %s", (lead_id,))
+            row = cursor.fetchone()
+            run_id = row["run_id"] if row else None
+            cursor.execute("DELETE FROM leads WHERE lead_id = %s", (lead_id,))
+            deleted = cursor.rowcount > 0
+        conn.commit()
+    if deleted and run_id:
+        touch_run(run_id)
+    return deleted
 
 
 def fetch_all_leads() -> list[dict[str, Any]]:
@@ -426,6 +509,23 @@ def get_setting(key: str, default: str | None = None) -> str | None:
     if isinstance(value, dict) and "text" in value:
         return value["text"]
     return default
+
+
+def get_bool_setting(key: str, default: bool = False) -> bool:
+    raw_value = get_setting(key)
+    if raw_value is None:
+        return default
+    return raw_value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def get_int_setting(key: str, default: int) -> int:
+    raw_value = get_setting(key)
+    if raw_value is None:
+        return default
+    try:
+        return int(raw_value)
+    except (TypeError, ValueError):
+        return default
 
 
 def normalize_lead(row: dict[str, Any]) -> dict[str, Any]:

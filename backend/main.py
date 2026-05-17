@@ -1,4 +1,3 @@
-import asyncio
 import uuid
 from urllib.parse import urlparse
 
@@ -39,38 +38,81 @@ class DomainRequest(BaseModel):
 
 class SettingsRequest(BaseModel):
     draft_system_prompt: str
+    search_dedupe_across_db: str | None = None
+    search_bucket_rounds: str | None = None
+    search_variant_limit: str | None = None
 
 
 async def process_lead(query: str, max_companies: int, run_id: str):
-    from db.models import finalize_run
+    from db.models import finalize_run, fetch_run, find_existing_lead, get_bool_setting, get_int_setting
     from graph import compile_lead_graph
     from nodes.search import search_node
 
     try:
-        results = search_node(query, max_companies=max_companies)
-        discovered = results.get("discovered_urls", [])
-        if not discovered:
-            finalize_run(run_id, "EXHAUSTED", "No valid company domains discovered.")
-            return
-
         workflow = compile_lead_graph()
-        tasks = []
-        for target in discovered:
-            lead_payload = enqueue_lead(
-                workflow=workflow,
-                run_id=run_id,
-                search_query=query,
-                company_name=target.get("company_name"),
-                domain=target["domain"],
-                source_url=target["source_url"],
-                source_type="tavily_search",
-            )
-            if lead_payload:
-                tasks.append(asyncio.create_task(run_workflow_for_lead(workflow, lead_payload)))
+        dedupe_across_db = get_bool_setting("search_dedupe_across_db", True)
+        bucket_rounds = max(1, get_int_setting("search_bucket_rounds", 6))
+        variant_limit = max(1, get_int_setting("search_variant_limit", 4))
+        search_target = min(max(max_companies * 4, 10), 25)
+        seen_domains: set[str] = set()
+        good_count = 0
+        bucket_queries = build_bucket_queries(query, bucket_rounds)
 
-        if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
-        finalize_run(run_id, "COMPLETED" if len(discovered) >= max_companies else "EXHAUSTED")
+        for bucket_query in bucket_queries:
+            run_snapshot = fetch_run(run_id)
+            if not run_snapshot or run_snapshot.get("stop_requested") or run_snapshot.get("status") == "STOPPED":
+                finalize_run(run_id, "STOPPED", "Run stopped by user.")
+                return
+            if good_count >= max_companies:
+                break
+
+            remaining = max_companies - good_count
+            results = search_node(
+                bucket_query,
+                max_companies=min(max(remaining * 4, 10), search_target),
+                max_attempts=variant_limit,
+                exclude_domains=seen_domains,
+            )
+            discovered = results.get("discovered_urls", [])
+            if not discovered:
+                continue
+
+            for target in discovered:
+                run_snapshot = fetch_run(run_id)
+                if not run_snapshot or run_snapshot.get("stop_requested") or run_snapshot.get("status") == "STOPPED":
+                    finalize_run(run_id, "STOPPED", "Run stopped by user.")
+                    return
+                if good_count >= max_companies:
+                    break
+
+                domain = target["domain"]
+                if domain in seen_domains:
+                    continue
+                if dedupe_across_db and find_existing_lead(domain):
+                    seen_domains.add(domain)
+                    continue
+
+                seen_domains.add(domain)
+                lead_payload = enqueue_lead(
+                    workflow=workflow,
+                    run_id=run_id,
+                    search_query=query,
+                    company_name=target.get("company_name"),
+                    domain=domain,
+                    source_url=target["source_url"],
+                    source_type="tavily_search",
+                )
+                if not lead_payload:
+                    continue
+
+                completed_lead = await run_workflow_for_lead(workflow, lead_payload)
+                item_status = getattr(completed_lead.status, "value", completed_lead.status)
+                if item_status == "READY_TO_SEND":
+                    good_count += 1
+                if good_count >= max_companies:
+                    break
+
+        finalize_run(run_id, "COMPLETED" if good_count >= max_companies else "EXHAUSTED")
     except Exception as exc:
         finalize_run(run_id, "FAILED", str(exc))
         print(f"Run {run_id} failed: {exc}")
@@ -149,6 +191,52 @@ async def run_workflow_for_lead(workflow, initial_lead):
         initial_lead.retry_count += 1
         save_lead_to_db(initial_lead)
         print(f"Workflow failed for {initial_lead.domain}: {exc}")
+    return initial_lead
+
+
+def build_bucket_queries(query: str, bucket_rounds: int) -> list[str]:
+    normalized = query.strip()
+    if is_brand_query(normalized):
+        return build_brand_queries(normalized, bucket_rounds)
+
+    suffixes = [
+        "",
+        " company",
+        " official site",
+        " contact",
+        " team",
+        " about",
+    ]
+    buckets = []
+    for index in range(bucket_rounds):
+        suffix = suffixes[index % len(suffixes)]
+        bucket_query = f"{normalized}{suffix}".strip()
+        if bucket_query not in buckets:
+            buckets.append(bucket_query)
+    return buckets
+
+
+def build_brand_queries(query: str, bucket_rounds: int) -> list[str]:
+    suffixes = [
+        "",
+        " official site",
+        " company",
+        " contact",
+        " team",
+        " about",
+    ]
+    buckets = []
+    for index in range(bucket_rounds):
+        suffix = suffixes[index % len(suffixes)]
+        bucket_query = f'"{query}"{suffix}'.strip()
+        if bucket_query not in buckets:
+            buckets.append(bucket_query)
+    return buckets
+
+
+def is_brand_query(query: str) -> bool:
+    tokens = [token for token in query.split() if token]
+    return len(tokens) == 1 and len(query) <= 24 and not query.startswith("http")
 
 
 @app.post("/api/search")
@@ -197,6 +285,24 @@ def get_lead(lead_id: str):
     return lead
 
 
+@app.delete("/api/leads/{lead_id}")
+def remove_lead(lead_id: str):
+    from db.models import delete_lead, fetch_lead
+
+    lead = fetch_lead(lead_id)
+    if not lead:
+        raise HTTPException(status_code=404, detail="Lead not found")
+    if lead.get("status") in {"SEARCHED", "CRAWLED", "EXTRACTED", "ENRICHED", "VALIDATED", "PERSONALIZED"}:
+        raise HTTPException(
+            status_code=409,
+            detail="Lead is still active. Stop the parent run or wait for completion before deleting it.",
+        )
+    deleted = delete_lead(lead_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Lead not found")
+    return {"status": "deleted", "lead_id": lead_id}
+
+
 @app.get("/api/runs")
 def get_runs():
     from db.models import fetch_runs
@@ -212,6 +318,36 @@ def get_run(run_id: str):
     if not run:
         raise HTTPException(status_code=404, detail="Run not found")
     return run
+
+
+@app.post("/api/runs/{run_id}/stop")
+def stop_run(run_id: str):
+    from db.models import fetch_run, request_run_stop
+
+    run = fetch_run(run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="Run not found")
+    if run.get("status") in {"COMPLETED", "EXHAUSTED", "FAILED", "STOPPED"}:
+        return run
+    updated = request_run_stop(run_id)
+    if not updated:
+        raise HTTPException(status_code=404, detail="Run not found")
+    return updated
+
+
+@app.delete("/api/runs/{run_id}")
+def remove_run(run_id: str, purge_leads: bool = True):
+    from db.models import delete_run, fetch_run
+
+    run = fetch_run(run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="Run not found")
+    if run.get("status") == "RUNNING" and not purge_leads:
+        raise HTTPException(status_code=409, detail="Stop the run before deleting it.")
+    deleted = delete_run(run_id, purge_leads=purge_leads)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Run not found")
+    return {"status": "deleted", "run_id": run_id, "purge_leads": purge_leads}
 
 
 @app.get("/api/summary")
@@ -245,6 +381,12 @@ def update_settings(req: SettingsRequest):
     from db.models import get_settings, update_setting
 
     update_setting("draft_system_prompt", req.draft_system_prompt)
+    if req.search_dedupe_across_db is not None:
+        update_setting("search_dedupe_across_db", req.search_dedupe_across_db)
+    if req.search_bucket_rounds is not None:
+        update_setting("search_bucket_rounds", req.search_bucket_rounds)
+    if req.search_variant_limit is not None:
+        update_setting("search_variant_limit", req.search_variant_limit)
     return get_settings()
 
 

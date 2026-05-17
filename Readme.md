@@ -22,7 +22,7 @@ The system performs:
 - Email enrichment
 - Lead validation
 - Personalized outreach generation
-- Scheduled follow-ups
+- Reserved follow-up states
 - State persistence with crash recovery
 
 Every lead maintains a persisted state throughout its lifecycle.
@@ -51,7 +51,7 @@ No tool exists purely for "stack impressiveness."
 |---|---|---|---|
 | Tavily | Search / discovery | Native LangGraph integration, built for agents | Free tier |
 | Crawl4AI | Website crawling | Local, anti-bot, crash recovery, no API key | Free |
-| LangChain structured outputs | Structured extraction | Lightweight and explicit in the current implementation | Existing key |
+| LangChain structured outputs | Structured extraction | Primary extraction path with heuristics fallback | Existing OpenAI key |
 | Hunter.io | Email enrichment | Domain -> verified email + confidence | Free tier |
 | OpenAI GPT-4o | Personalization + drafting | Structured reasoning + draft generation | Existing key |
 | LangGraph | Workflow orchestration | Stateful graphs, branching, checkpointing | Free |

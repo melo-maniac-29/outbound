@@ -3,7 +3,7 @@ import "./globals.css";
 
 export const metadata: Metadata = {
   title: "Outbound Nexus",
-  description: "Outbound AI outreach pipeline dashboard",
+  description: "Outbound AI outreach workspace with review-first dashboard and lead detail pages",
 };
 
 export default function RootLayout({
