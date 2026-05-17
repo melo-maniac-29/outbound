@@ -87,7 +87,16 @@ def is_company_candidate(domain: str, url: str) -> bool:
 
     return True
 
-def search_node(state_or_query, max_companies: int = 5) -> dict:
+def query_variants(query: str) -> list[str]:
+    return [
+        query,
+        f"{query} agency website founder",
+        f"{query} leadership team agency",
+        f"{query} boutique agency contact",
+    ]
+
+
+def search_node(state_or_query, max_companies: int = 5, max_attempts: int = 4) -> dict:
     """
     Search discovery using Tavily.
     Input: search string
@@ -104,35 +113,36 @@ def search_node(state_or_query, max_companies: int = 5) -> dict:
         return {"discovered_urls": []}
 
     client = TavilyClient(api_key=api_key)
-    try:
-        response = client.search(
-            query=query,
-            search_depth="basic",
-            max_results=max(max_companies * 3, 8)
-        )
-    except Exception as exc:
-        print(f"Search node error: {exc}")
-        return {"discovered_urls": []}
-    
     urls = []
     seen_domains = set()
-    
-    for r in response.get("results", []):
-        url = r.get("url")
-        domain = normalize_url(url)
-        
-        if not is_company_candidate(domain, url):
+
+    for variant in query_variants(query)[:max_attempts]:
+        try:
+            response = client.search(
+                query=variant,
+                search_depth="basic",
+                max_results=max(max_companies * 4, 10)
+            )
+        except Exception as exc:
+            print(f"Search node error for '{variant}': {exc}")
             continue
 
-        if domain and domain not in seen_domains:
-            seen_domains.add(domain)
-            urls.append({
-                "source_url": url,
-                "domain": domain,
-                "title": r.get("title"),
-                "company_name": infer_company_name(r.get("title"), domain),
-            })
-            if len(urls) >= max_companies:
-                break
-            
+        for r in response.get("results", []):
+            url = r.get("url")
+            domain = normalize_url(url)
+
+            if not is_company_candidate(domain, url):
+                continue
+
+            if domain and domain not in seen_domains:
+                seen_domains.add(domain)
+                urls.append({
+                    "source_url": url,
+                    "domain": domain,
+                    "title": r.get("title"),
+                    "company_name": infer_company_name(r.get("title"), domain),
+                })
+                if len(urls) >= max_companies:
+                    return {"discovered_urls": urls}
+
     return {"discovered_urls": urls}

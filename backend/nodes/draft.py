@@ -2,6 +2,7 @@ import os
 import json
 from openai import OpenAI
 from state import LeadStatus
+from db.models import get_setting
 
 def _fallback_sequence(founder_name: str, company: str, signal: str, sender: str) -> list[str]:
     first_name = founder_name or "there"
@@ -37,7 +38,8 @@ def draft_node(founder_name: str, company: str, signal: str, product: str = "our
     """
     prompt_path = os.path.join(os.path.dirname(__file__), "../prompts/email_system.txt")
     with open(prompt_path, "r") as f:
-        system_prompt = f.read()
+        file_prompt = f.read()
+    system_prompt = get_setting("draft_system_prompt", file_prompt) or file_prompt
 
     api_key = os.getenv("OPENAI_API_KEY")
     if not api_key or api_key == "dummy":

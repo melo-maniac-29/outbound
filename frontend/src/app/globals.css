@@ -122,6 +122,12 @@ input {
   gap: 16px;
 }
 
+.hero-links {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
 .status-chip,
 .utility-link,
 .mode-pill,
@@ -297,6 +303,10 @@ input {
   margin-top: 18px;
 }
 
+.single-column {
+  grid-template-columns: 1fr;
+}
+
 .info-card {
   display: flex;
   gap: 12px;
@@ -332,6 +342,17 @@ input {
   background: rgba(177, 67, 57, 0.12);
   border: 1px solid rgba(177, 67, 57, 0.32);
   color: var(--danger);
+  font-family: "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+  font-weight: 600;
+}
+
+.info-banner {
+  margin-top: 18px;
+  border-radius: 18px;
+  padding: 14px 16px;
+  background: rgba(29, 107, 98, 0.1);
+  border: 1px solid rgba(29, 107, 98, 0.28);
+  color: var(--teal);
   font-family: "Segoe UI", "Helvetica Neue", Arial, sans-serif;
   font-weight: 600;
 }
@@ -415,6 +436,34 @@ input {
   gap: 22px;
 }
 
+.route-panel {
+  margin-bottom: 18px;
+}
+
+.route-title {
+  margin: 6px 0 0;
+  font-family: "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+  font-size: clamp(2.2rem, 4vw, 3.8rem);
+  letter-spacing: -0.04em;
+}
+
+.back-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 16px;
+  font-family: "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+  font-weight: 700;
+  color: var(--accent-deep);
+}
+
+.route-meta-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 14px;
+  margin-top: 18px;
+}
+
 .detail-summary,
 .sequence-panel {
   padding: 20px;
@@ -484,6 +533,19 @@ input {
   font-size: 1.05rem;
 }
 
+.text-area {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.84);
+  padding: 16px 18px;
+  color: var(--ink);
+  outline: none;
+  resize: vertical;
+  min-height: 360px;
+  line-height: 1.6;
+}
+
 .sequence-card {
   padding: 16px;
   border-radius: 18px;
@@ -529,6 +591,25 @@ input {
   background: rgba(196, 139, 47, 0.14);
   border-color: rgba(196, 139, 47, 0.28);
   color: #946510;
+}
+
+.status-COMPLETED {
+  background: rgba(109, 125, 57, 0.14);
+  border-color: rgba(109, 125, 57, 0.28);
+  color: #536029;
+}
+
+.status-RUNNING {
+  background: rgba(29, 107, 98, 0.12);
+  border-color: rgba(29, 107, 98, 0.28);
+  color: var(--teal);
+}
+
+.status-FAILED,
+.status-EXHAUSTED {
+  background: rgba(177, 67, 57, 0.12);
+  border-color: rgba(177, 67, 57, 0.28);
+  color: var(--danger);
 }
 
 .status-EXTRACTED,
@@ -599,8 +680,13 @@ input {
 
   .control-row,
   .detail-title-row,
-  .detail-metrics {
+  .detail-metrics,
+  .route-meta-grid {
     flex-direction: column;
+  }
+
+  .route-meta-grid {
+    grid-template-columns: 1fr;
   }
 
   .compact-field,

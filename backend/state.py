@@ -21,6 +21,7 @@ class LeadStatus(str, Enum):
 
 class LeadState(BaseModel):
     lead_id: str
+    run_id: Optional[str] = None
 
     search_query: str
     company_name: Optional[str] = None

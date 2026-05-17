@@ -77,6 +77,12 @@ def merge_extractions_step(state: GraphState):
     save_lead_to_db(lead)
     return {"lead": lead}
 
+def dead_lead_step(state: GraphState):
+    lead = state["lead"]
+    lead.status = LeadStatus.DEAD_LEAD
+    save_lead_to_db(lead)
+    return {"lead": lead}
+
 def enrich_step(state: GraphState):
     lead = state["lead"]
     data = enrich_node(lead.domain)
@@ -143,7 +149,7 @@ def outreach_step(state: GraphState):
 def check_founder_confidence(state: GraphState):
     if state["lead"].founder_confidence >= 0.75:
         return "enrich_node"
-    return END
+    return "dead_lead_node"
 
 def check_email_confidence(state: GraphState):
     if state["lead"].email_confidence >= 0.70:
@@ -167,6 +173,7 @@ def compile_lead_graph():
     workflow.add_node("extract_services", extract_services_step)
     workflow.add_node("extract_signals", extract_signals_step)
     workflow.add_node("merge_extractions", merge_extractions_step)
+    workflow.add_node("dead_lead_node", dead_lead_step)
     
     workflow.add_node("enrich_node", enrich_step)
     workflow.add_node("pattern_guess_node", pattern_guess_step)
@@ -189,6 +196,7 @@ def compile_lead_graph():
     
     # Conditional branch after merging extraction
     workflow.add_conditional_edges("merge_extractions", check_founder_confidence)
+    workflow.add_edge("dead_lead_node", END)
     
     # Conditional branch after enrichment
     workflow.add_conditional_edges("enrich_node", check_email_confidence)
