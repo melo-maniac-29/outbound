@@ -1,9 +1,9 @@
 "use client";
 
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { useParams, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
-import { ArrowLeft, Building2, Mail, RefreshCw, Trash2, User, Square } from "lucide-react";
+import { ArrowLeft, Building2, Mail, RefreshCw, Square, Trash2, User } from "lucide-react";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
@@ -28,7 +28,8 @@ type RunDetail = {
   leads: Lead[];
 };
 
-export default function RunDetailPage(props: { params: Promise<{ runId: string }> }) {
+export default function RunDetailPage() {
+  const params = useParams<{ runId: string }>();
   const [run, setRun] = useState<RunDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [working, setWorking] = useState(false);
@@ -37,20 +38,16 @@ export default function RunDetailPage(props: { params: Promise<{ runId: string }
 
   useEffect(() => {
     const load = async () => {
-      const { runId } = await props.params;
-      const res = await fetch(`${API_URL}/api/runs/${runId}`);
+      const res = await fetch(`${API_URL}/api/runs/${params.runId}`);
       const data = await res.json();
       setRun(data);
       setLoading(false);
     };
     void load();
-  }, [props.params]);
-
-  const runIdPromise = props.params;
+  }, [params.runId]);
 
   const refreshRun = async () => {
-    const { runId } = await runIdPromise;
-    const res = await fetch(`${API_URL}/api/runs/${runId}`);
+    const res = await fetch(`${API_URL}/api/runs/${params.runId}`);
     const data = await res.json();
     setRun(data);
   };
@@ -58,8 +55,7 @@ export default function RunDetailPage(props: { params: Promise<{ runId: string }
   const stopRun = async () => {
     setWorking(true);
     setMessage(null);
-    const { runId } = await runIdPromise;
-    const res = await fetch(`${API_URL}/api/runs/${runId}/stop`, { method: "POST" });
+    const res = await fetch(`${API_URL}/api/runs/${params.runId}/stop`, { method: "POST" });
     if (res.ok) {
       setMessage("Run stop requested.");
       await refreshRun();
@@ -73,8 +69,7 @@ export default function RunDetailPage(props: { params: Promise<{ runId: string }
   const deleteRun = async () => {
     setWorking(true);
     setMessage(null);
-    const { runId } = await runIdPromise;
-    const res = await fetch(`${API_URL}/api/runs/${runId}?purge_leads=true`, { method: "DELETE" });
+    const res = await fetch(`${API_URL}/api/runs/${params.runId}?purge_leads=true`, { method: "DELETE" });
     if (res.ok) {
       router.push("/dashboard");
       router.refresh();

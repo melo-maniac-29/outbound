@@ -1,7 +1,8 @@
-from enum import Enum
-from pydantic import BaseModel, Field
 from datetime import datetime
-from typing import List, Optional
+from enum import Enum
+from typing import Any, List, Optional
+
+from pydantic import BaseModel, Field
 
 class LeadStatus(str, Enum):
     NEW = "NEW"
@@ -36,6 +37,7 @@ class LeadState(BaseModel):
 
     services: List[str] = Field(default_factory=list)
     signals: List[str] = Field(default_factory=list)
+    company_profile: dict[str, Any] = Field(default_factory=dict)
 
     source_url: Optional[str] = None
     source_type: Optional[str] = None

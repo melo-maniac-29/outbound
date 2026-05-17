@@ -84,6 +84,7 @@ def init_db():
                     email_confidence DOUBLE PRECISION NOT NULL DEFAULT 0,
                     services JSONB NOT NULL DEFAULT '[]'::jsonb,
                     signals JSONB NOT NULL DEFAULT '[]'::jsonb,
+                    company_profile JSONB NOT NULL DEFAULT '{}'::jsonb,
                     source_url TEXT,
                     source_type TEXT,
                     extraction_timestamp TIMESTAMPTZ,
@@ -97,6 +98,7 @@ def init_db():
             cursor.execute("ALTER TABLE leads ADD COLUMN IF NOT EXISTS run_id TEXT")
             cursor.execute("ALTER TABLE leads ADD COLUMN IF NOT EXISTS services JSONB NOT NULL DEFAULT '[]'::jsonb")
             cursor.execute("ALTER TABLE leads ADD COLUMN IF NOT EXISTS signals JSONB NOT NULL DEFAULT '[]'::jsonb")
+            cursor.execute("ALTER TABLE leads ADD COLUMN IF NOT EXISTS company_profile JSONB NOT NULL DEFAULT '{}'::jsonb")
             cursor.execute("ALTER TABLE leads ADD COLUMN IF NOT EXISTS email_sequence JSONB NOT NULL DEFAULT '[]'::jsonb")
             cursor.execute("ALTER TABLE leads ADD COLUMN IF NOT EXISTS retry_count INTEGER NOT NULL DEFAULT 0")
             cursor.execute("ALTER TABLE leads ADD COLUMN IF NOT EXISTS source_type TEXT")
@@ -183,12 +185,12 @@ def save_lead_to_db(state):
                 INSERT INTO leads (
                     lead_id, run_id, search_query, company_name, domain, founder_name,
                     founder_linkedin, founder_confidence, email, email_confidence,
-                    services, signals, source_url, source_type, extraction_timestamp,
+                    services, signals, company_profile, source_url, source_type, extraction_timestamp,
                     email_sequence, retry_count, status, updated_at
                 ) VALUES (
                     %(lead_id)s, %(run_id)s, %(search_query)s, %(company_name)s, %(domain)s, %(founder_name)s,
                     %(founder_linkedin)s, %(founder_confidence)s, %(email)s, %(email_confidence)s,
-                    %(services)s::jsonb, %(signals)s::jsonb, %(source_url)s, %(source_type)s, %(extraction_timestamp)s,
+                    %(services)s::jsonb, %(signals)s::jsonb, %(company_profile)s::jsonb, %(source_url)s, %(source_type)s, %(extraction_timestamp)s,
                     %(email_sequence)s::jsonb, %(retry_count)s, %(status)s, %(updated_at)s
                 )
                 ON CONFLICT (lead_id) DO UPDATE SET
@@ -203,6 +205,7 @@ def save_lead_to_db(state):
                     email_confidence = EXCLUDED.email_confidence,
                     services = EXCLUDED.services,
                     signals = EXCLUDED.signals,
+                    company_profile = EXCLUDED.company_profile,
                     source_url = EXCLUDED.source_url,
                     source_type = EXCLUDED.source_type,
                     extraction_timestamp = EXCLUDED.extraction_timestamp,
@@ -224,6 +227,7 @@ def save_lead_to_db(state):
                     "email_confidence": state.email_confidence,
                     "services": json.dumps(state.services),
                     "signals": json.dumps(state.signals),
+                    "company_profile": json.dumps(state.company_profile),
                     "source_url": state.source_url,
                     "source_type": state.source_type,
                     "extraction_timestamp": state.extraction_timestamp,
@@ -532,5 +536,6 @@ def normalize_lead(row: dict[str, Any]) -> dict[str, Any]:
     lead = dict(row)
     lead["services"] = lead.get("services") or []
     lead["signals"] = lead.get("signals") or []
+    lead["company_profile"] = lead.get("company_profile") or {}
     lead["email_sequence"] = lead.get("email_sequence") or []
     return lead

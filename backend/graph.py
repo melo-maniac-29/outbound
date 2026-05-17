@@ -6,6 +6,8 @@ from db.models import save_lead_to_db
 
 from nodes.crawl import crawl_node
 from nodes.extract import extract_founder_node, extract_services_node, extract_signals_node
+from nodes.linkedin_lookup import linkedin_lookup_node
+from nodes.profile import build_profile_node
 from nodes.enrich import enrich_node, pattern_guess_node
 from nodes.validate import validate_node
 from nodes.personalize import personalize_node
@@ -15,6 +17,7 @@ class GraphState(TypedDict):
     lead: LeadState
     markdown: Optional[str]
     personalization_hook: Optional[str]
+    company_profile: Optional[dict]
     
     # Temporary fields for parallel extraction
     ext_founder: Optional[dict]
@@ -77,6 +80,18 @@ def merge_extractions_step(state: GraphState):
     save_lead_to_db(lead)
     return {"lead": lead}
 
+def linkedin_lookup_step(state: GraphState):
+    lead = state["lead"]
+    data = linkedin_lookup_node(
+        founder_name=lead.founder_name,
+        company_name=lead.company_name,
+        domain=lead.domain,
+        existing_linkedin=lead.founder_linkedin,
+    )
+    lead.founder_linkedin = data.get("founder_linkedin") or lead.founder_linkedin
+    save_lead_to_db(lead)
+    return {"lead": lead}
+
 def dead_lead_step(state: GraphState):
     lead = state["lead"]
     lead.status = LeadStatus.DEAD_LEAD
@@ -91,6 +106,23 @@ def enrich_step(state: GraphState):
     lead.status = LeadStatus.ENRICHED
     save_lead_to_db(lead)
     return {"lead": lead}
+
+async def build_profile_step(state: GraphState):
+    lead = state["lead"]
+    markdown = state.get("markdown") or ""
+    data = await build_profile_node(
+        markdown_content=markdown,
+        company_name=lead.company_name,
+        domain=lead.domain,
+        founder_name=lead.founder_name,
+        founder_linkedin=lead.founder_linkedin,
+        services=lead.services,
+        signals=lead.signals,
+        email=lead.email,
+    )
+    lead.company_profile = data
+    save_lead_to_db(lead)
+    return {"lead": lead, "company_profile": data}
 
 def pattern_guess_step(state: GraphState):
     lead = state["lead"]
@@ -118,7 +150,7 @@ def validate_step(state: GraphState):
 
 def personalize_step(state: GraphState):
     lead = state["lead"]
-    data = personalize_node(lead.signals)
+    data = personalize_node(lead.signals, lead.company_profile)
     lead.status = LeadStatus.PERSONALIZED
     save_lead_to_db(lead)
     return {"personalization_hook": data["personalization_hook"], "lead": lead}
@@ -129,7 +161,8 @@ def draft_step(state: GraphState):
     data = draft_node(
         founder_name=lead.founder_name,
         company=lead.company_name or lead.domain,
-        signal=hook
+        signal=hook,
+        company_profile=lead.company_profile,
     )
     lead.email_sequence = data.get("email_sequence", [])
     lead.status = data.get("status", LeadStatus.DEAD_LEAD)
@@ -148,7 +181,7 @@ def outreach_step(state: GraphState):
 # --- Conditional Edges ---
 def check_founder_confidence(state: GraphState):
     if state["lead"].founder_confidence >= 0.75:
-        return "enrich_node"
+        return "linkedin_lookup_node"
     return "dead_lead_node"
 
 def check_email_confidence(state: GraphState):
@@ -173,9 +206,11 @@ def compile_lead_graph():
     workflow.add_node("extract_services", extract_services_step)
     workflow.add_node("extract_signals", extract_signals_step)
     workflow.add_node("merge_extractions", merge_extractions_step)
+    workflow.add_node("linkedin_lookup_node", linkedin_lookup_step)
     workflow.add_node("dead_lead_node", dead_lead_step)
     
     workflow.add_node("enrich_node", enrich_step)
+    workflow.add_node("build_profile_node", build_profile_step)
     workflow.add_node("pattern_guess_node", pattern_guess_step)
     workflow.add_node("validate_node", validate_step)
     workflow.add_node("personalize_node", personalize_step)
@@ -199,7 +234,9 @@ def compile_lead_graph():
     workflow.add_edge("dead_lead_node", END)
     
     # Conditional branch after enrichment
-    workflow.add_conditional_edges("enrich_node", check_email_confidence)
+    workflow.add_conditional_edges("build_profile_node", check_email_confidence)
+    workflow.add_edge("enrich_node", "build_profile_node")
+    workflow.add_edge("linkedin_lookup_node", "enrich_node")
     
     # Pattern guess merges back into validation
     workflow.add_edge("pattern_guess_node", "validate_node")

@@ -1,13 +1,15 @@
 import os
 import re
+import json
 from openai import OpenAI
 from state import LeadStatus
 from db.models import get_setting
 
-def _fallback_sequence(founder_name: str, company: str, signal: str, sender: str) -> list[str]:
+def _fallback_sequence(founder_name: str, company: str, signal: str, sender: str, company_profile: dict | None = None) -> list[str]:
     first_name = founder_name or "there"
     company_name = company or "your company"
-    hook = signal or "a recent update on your team"
+    profile_summary = (company_profile or {}).get("summary") or ""
+    hook = signal or profile_summary or "a recent update on your team"
     return [
         (
             f"Hi {first_name},\n\n"
@@ -31,7 +33,7 @@ def _fallback_sequence(founder_name: str, company: str, signal: str, sender: str
     ]
 
 
-def draft_node(founder_name: str, company: str, signal: str, product: str = "our AI outreach system", sender: str = "Allen") -> dict:
+def draft_node(founder_name: str, company: str, signal: str, company_profile: dict | None = None, product: str = "our AI outreach system", sender: str = "Allen") -> dict:
     """
     Tool: GPT-4o
     Generates the 3-email sequence based on constraints.
@@ -44,11 +46,12 @@ def draft_node(founder_name: str, company: str, signal: str, product: str = "our
     api_key = os.getenv("OPENAI_API_KEY")
     if not api_key or api_key == "dummy":
         return {
-            "email_sequence": _fallback_sequence(founder_name, company, signal, sender),
+            "email_sequence": _fallback_sequence(founder_name, company, signal, sender, company_profile=company_profile),
             "status": LeadStatus.READY_TO_SEND,
         }
 
     client = OpenAI(api_key=api_key, base_url=os.getenv("OPENAI_API_BASE"))
+    profile_blob = json.dumps(company_profile or {}, ensure_ascii=True)
         
     user_prompt = f"""
     Generate a 3-email sequence.
@@ -56,6 +59,7 @@ def draft_node(founder_name: str, company: str, signal: str, product: str = "our
     - first_name: {founder_name or "Founder"}
     - company: {company or "your company"}
     - signal: {signal or "your recent updates"}
+    - company_profile: {profile_blob}
     - product: {product}
     - sender: {sender}
 
@@ -91,6 +95,6 @@ def draft_node(founder_name: str, company: str, signal: str, product: str = "our
     except Exception as e:
         print(f"Draft Node Error: {e}")
         return {
-            "email_sequence": _fallback_sequence(founder_name, company, signal, sender),
+            "email_sequence": _fallback_sequence(founder_name, company, signal, sender, company_profile=company_profile),
             "status": LeadStatus.READY_TO_SEND,
         }

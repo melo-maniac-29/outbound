@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { useParams, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { ArrowLeft, Mail, RefreshCw, Trash2, User } from "lucide-react";
 
@@ -20,11 +20,20 @@ type Lead = {
   signals: string[];
   services: string[];
   email_sequence: string[];
+  company_profile?: {
+    summary?: string;
+    positioning?: string;
+    audience?: string;
+    key_services?: string[];
+    credibility_signals?: string[];
+    outreach_angle?: string;
+  };
   status: string;
   run_id: string | null;
 };
 
-export default function LeadDetailPage(props: { params: Promise<{ leadId: string }> }) {
+export default function LeadDetailPage() {
+  const params = useParams<{ leadId: string }>();
   const [lead, setLead] = useState<Lead | null>(null);
   const [loading, setLoading] = useState(true);
   const [working, setWorking] = useState(false);
@@ -33,22 +42,18 @@ export default function LeadDetailPage(props: { params: Promise<{ leadId: string
 
   useEffect(() => {
     const load = async () => {
-      const { leadId } = await props.params;
-      const res = await fetch(`${API_URL}/api/leads/${leadId}`);
+      const res = await fetch(`${API_URL}/api/leads/${params.leadId}`);
       const data = await res.json();
       setLead(data);
       setLoading(false);
     };
     void load();
-  }, [props.params]);
-
-  const leadIdPromise = props.params;
+  }, [params.leadId]);
 
   const deleteLead = async () => {
     setWorking(true);
     setMessage(null);
-    const { leadId } = await leadIdPromise;
-    const res = await fetch(`${API_URL}/api/leads/${leadId}`, { method: "DELETE" });
+    const res = await fetch(`${API_URL}/api/leads/${params.leadId}`, { method: "DELETE" });
     if (res.ok) {
       router.push("/dashboard");
       router.refresh();
@@ -88,7 +93,11 @@ export default function LeadDetailPage(props: { params: Promise<{ leadId: string
         <p className="eyebrow">Lead Detail</p>
         <h1 className="route-title">{lead.company_name || lead.domain || lead.search_query}</h1>
         <p className="hero-text">{lead.domain || lead.search_query}</p>
-        {lead.run_id && <Link className="utility-link" href={`/runs/${lead.run_id}`}>Open parent run</Link>}
+        {lead.run_id && (
+          <Link className="utility-link" href={`/runs/${lead.run_id}`}>
+            Open parent run
+          </Link>
+        )}
         <div className="action-row">
           <button className="danger-button" type="button" onClick={deleteLead} disabled={working}>
             <Trash2 size={16} />
@@ -139,6 +148,36 @@ export default function LeadDetailPage(props: { params: Promise<{ leadId: string
                 {service}
               </span>
             ))}
+          </div>
+        </div>
+        <div className="panel">
+          <h2>Company Profile</h2>
+          <div className="detail-summary">
+            <div className="detail-title-row">
+              <div>
+                <h3>{lead.company_profile?.summary || "Profile pending"}</h3>
+                <p>{lead.company_profile?.positioning || "No positioning extracted yet."}</p>
+              </div>
+            </div>
+            <div className="tag-group">
+              {(lead.company_profile?.key_services?.length ? lead.company_profile.key_services : ["No key services yet"]).map((item) => (
+                <span key={item} className="signal-tag">
+                  {item}
+                </span>
+              ))}
+            </div>
+            <div className="tag-group">
+              {(lead.company_profile?.credibility_signals?.length
+                ? lead.company_profile.credibility_signals
+                : ["No credibility signals yet"]).map((item) => (
+                <span key={item} className="signal-tag">
+                  {item}
+                </span>
+              ))}
+            </div>
+            <p className="supporting-text">
+              {lead.company_profile?.outreach_angle || "No outreach angle was synthesized yet."}
+            </p>
           </div>
         </div>
         <div className="panel">

@@ -185,7 +185,7 @@ async def run_workflow_for_lead(workflow, initial_lead):
     from state import LeadStatus
 
     try:
-        await workflow.ainvoke({"lead": initial_lead, "markdown": None, "personalization_hook": None})
+        await workflow.ainvoke({"lead": initial_lead, "markdown": None, "personalization_hook": None, "company_profile": None})
     except Exception as exc:
         initial_lead.status = LeadStatus.RETRY_PENDING if initial_lead.retry_count < 3 else LeadStatus.DEAD_LEAD
         initial_lead.retry_count += 1

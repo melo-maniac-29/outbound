@@ -1,13 +1,18 @@
 import os
 from openai import OpenAI
 
-def personalize_node(signals: list) -> dict:
+def personalize_node(signals: list, company_profile: dict | None = None) -> dict:
     """
     Tool: GPT-4o
     Selects one relevant signal from the extracted list for personalization.
     """
+    profile_angle = (company_profile or {}).get("outreach_angle")
+    if profile_angle:
+        return {"personalization_hook": profile_angle}
+
     if not signals:
-        return {"personalization_hook": "Noticed your recent growth."}
+        profile_summary = (company_profile or {}).get("summary")
+        return {"personalization_hook": profile_summary or "Noticed your recent growth."}
 
     api_key = os.getenv("OPENAI_API_KEY")
     if not api_key or api_key == "dummy":

@@ -1,7 +1,6 @@
 import os
 import re
 from urllib.parse import urlparse
-from tavily import TavilyClient
 
 BLOCKED_DOMAINS = {
     "apple.com",
@@ -91,9 +90,6 @@ def is_company_candidate(domain: str, url: str, query: str | None = None, title:
         domain_token = normalize_token(normalized_domain)
         if query_token and query_token not in domain_token:
             return False
-        brand_allowed_paths = {"about", "about-us", "team", "leadership", "contact", "services", "work", "pages", ""}
-        if path_parts and path_parts[0] not in brand_allowed_paths:
-            return False
     blocked_markers = (
         "/blog/",
         "/blogs/",
@@ -112,10 +108,6 @@ def is_company_candidate(domain: str, url: str, query: str | None = None, title:
         return False
 
     if path_parts and path_parts[0] in {"in", "company", "posts", "article", "articles"}:
-        return False
-
-    allowed_first_parts = {"about", "about-us", "team", "leadership", "contact", "services", "work", "pages"}
-    if len(path_parts) > 2 and path_parts[0] not in allowed_first_parts:
         return False
 
     return True
@@ -158,6 +150,12 @@ def search_node(
     
     # We want to find company websites
     if not api_key or api_key == "dummy" or not original_query:
+        return {"discovered_urls": []}
+
+    try:
+        from tavily import TavilyClient
+    except ImportError:
+        print("Tavily client is not installed.")
         return {"discovered_urls": []}
 
     client = TavilyClient(api_key=api_key)

@@ -1,7 +1,6 @@
 import os
 import re
 from pydantic import BaseModel, Field
-from langchain_openai import ChatOpenAI
 
 
 def _model_name() -> str:
@@ -9,6 +8,8 @@ def _model_name() -> str:
 
 
 def get_llm():
+    from langchain_openai import ChatOpenAI
+
     return ChatOpenAI(
         api_key=os.getenv("OPENAI_API_KEY", "dummy"),
         model=_model_name(),
