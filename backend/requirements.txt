@@ -1,0 +1,12 @@
+pydantic>=2.0.0
+langgraph>=0.2.0
+langgraph-checkpoint-sqlite
+langchain-core
+langchain-openai
+tavily-python
+crawl4ai
+scrapegraphai
+requests
+python-dotenv
+fastapi
+uvicorn
