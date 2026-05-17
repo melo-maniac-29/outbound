@@ -50,6 +50,6 @@ def pattern_guess_node(founder_name: str, domain: str) -> dict:
         first = parts[0]
         last = parts[-1]
         guessed_email = f"{first}.{last}@{domain}"
-        return {"email": guessed_email, "email_confidence": 0.65} # Educated guess confidence
+        return {"email": guessed_email, "email_confidence": 0.72}
         
     return {"email": None, "email_confidence": 0.0}

@@ -1,0 +1,5 @@
+backend/outbound_leads.db
+backend/__pycache__/
+backend/db/__pycache__/
+backend/nodes/__pycache__/
+frontend/.next/

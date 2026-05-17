@@ -8,17 +8,18 @@ def personalize_node(signals: list) -> dict:
     """
     if not signals:
         return {"personalization_hook": "Noticed your recent growth."}
-        
-    client = OpenAI(
-        api_key=os.getenv("OPENAI_API_KEY", "dummy"),
-        base_url=os.getenv("OPENAI_API_BASE")
-    )
+
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key or api_key == "dummy":
+        return {"personalization_hook": signals[0]}
+
+    client = OpenAI(api_key=api_key, base_url=os.getenv("OPENAI_API_BASE"))
     
     prompt = f"Select the single most relevant and impactful business signal from the following list to use as a personalization hook in a cold email. Return ONLY the chosen signal text.\n\nSignals:\n{signals}"
     
     try:
         response = client.chat.completions.create(
-            model=os.getenv("OPENAI_MODEL_NAME", "gpt-4"),
+            model=os.getenv("OPENAI_MODEL_NAME", "gpt-4o"),
             messages=[{"role": "user", "content": prompt}],
             temperature=0.3,
             max_tokens=50

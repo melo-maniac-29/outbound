@@ -1,5 +1,5 @@
-import asyncio
-from typing import TypedDict, Optional
+from datetime import datetime
+from typing import Optional, TypedDict
 from langgraph.graph import StateGraph, START, END
 from state import LeadState, LeadStatus
 from db.models import save_lead_to_db
@@ -30,6 +30,7 @@ async def crawl_step(state: GraphState):
         try:
             md = await crawl_node(url)
             lead.status = LeadStatus.CRAWLED
+            lead.source_url = url
             save_lead_to_db(lead)
             return {"markdown": md, "lead": lead}
         except Exception as e:
@@ -70,6 +71,7 @@ def merge_extractions_step(state: GraphState):
     
     lead.services = state.get("ext_services", [])
     lead.signals = state.get("ext_signals", [])
+    lead.extraction_timestamp = datetime.utcnow()
     
     lead.status = LeadStatus.EXTRACTED
     save_lead_to_db(lead)
@@ -89,6 +91,7 @@ def pattern_guess_step(state: GraphState):
     data = pattern_guess_node(lead.founder_name, lead.domain)
     lead.email = data.get("email")
     lead.email_confidence = data.get("email_confidence", 0.0)
+    lead.status = LeadStatus.ENRICHED
     save_lead_to_db(lead)
     return {"lead": lead}
 
