@@ -6,7 +6,13 @@ Assessment Submission · Allen Bobby
 
 # 1. Overview
 
-This system takes Google-style search strings as input and produces personalized 3-email outreach sequences for qualified leads.
+This system takes Google-style search strings as input and produces personalized 3-email draft sequences for qualified leads.
+
+Current operating mode:
+
+- PostgreSQL is the source of truth for persistence
+- Gmail or SMTP sending is intentionally disabled for now
+- the pipeline stops at `READY_TO_SEND` for human review
 
 The system performs:
 
@@ -45,12 +51,12 @@ No tool exists purely for "stack impressiveness."
 |---|---|---|---|
 | Tavily | Search / discovery | Native LangGraph integration, built for agents | Free tier |
 | Crawl4AI | Website crawling | Local, anti-bot, crash recovery, no API key | Free |
-| ScrapeGraphAI | Structured extraction | Prompt-based extraction using existing OpenAI key | OpenAI usage |
-| Hunter.io | Email enrichment | Domain → verified email + confidence | Free tier |
-| OpenAI GPT-4o | Personalization + drafting | Structured reasoning + JSON outputs | Existing key |
+| LangChain structured outputs | Structured extraction | Lightweight and explicit in the current implementation | Existing key |
+| Hunter.io | Email enrichment | Domain -> verified email + confidence | Free tier |
+| OpenAI GPT-4o | Personalization + drafting | Structured reasoning + draft generation | Existing key |
 | LangGraph | Workflow orchestration | Stateful graphs, branching, checkpointing | Free |
-| SQLite | State persistence | Lightweight relational storage | Free |
-| Gmail SMTP | Email delivery | Zero setup overhead for demo | Free |
+| PostgreSQL | State persistence | Reliable relational storage and upgrade-friendly | Free |
+| Manual review gate | Delivery control | No live send until the pipeline is stable | Free |
 
 ---
 
@@ -149,7 +155,7 @@ Responsibilities:
 
 ## extract_node
 
-Tool: ScrapeGraphAI
+Tool: LangChain structured output + heuristics
 
 Input:
 
@@ -282,20 +288,13 @@ Constraints:
 
 ## outreach_node
 
-Tool: Gmail SMTP
+Tool: manual review gate
 
 Responsibilities:
 
-- Send Email 1
-- Schedule follow-ups
-
-Schedule:
-
-Day 0
-
-Day 3
-
-Day 10
+- keep the lead at `READY_TO_SEND`
+- do not send live mail yet
+- preserve the draft sequence for later approval
 
 ---
 
@@ -448,6 +447,8 @@ LangSmith can be added without graph redesign.
 
 # 12. Email Sequence
 
+The system still drafts a 3-email sequence, but it does not send live email yet.
+
 ## Email 1 — Day 0
 
 Subject:
@@ -583,6 +584,12 @@ Better for production.
 
 Docker setup adds demo overhead.
 
+## Gmail SMTP
+
+Reason:
+
+Live delivery is deferred until the review-first pipeline is stable.
+
 ---
 
 # 15. Upgrade Path
@@ -591,15 +598,15 @@ The architecture supports zero-redesign upgrades.
 
 Examples:
 
-SQLite → PostgreSQL
+PostgreSQL is already in place and should remain the default.
 
 Tavily → SearXNG
 
-Gmail SMTP → SendGrid
+manual review gate → Gmail SMTP or SendGrid when live sending is ready
 
 Structured logs → LangSmith
 
-All upgrades require changes in a single node or config file.
+All upgrades should stay isolated to a single node or config file.
 
 ---
 

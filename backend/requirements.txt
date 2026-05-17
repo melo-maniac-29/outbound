@@ -5,7 +5,6 @@ langchain-core
 langchain-openai
 tavily-python
 crawl4ai
-scrapegraphai
 requests
 python-dotenv
 fastapi

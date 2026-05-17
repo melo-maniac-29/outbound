@@ -1,5 +1,5 @@
 import os
-import json
+import re
 from openai import OpenAI
 from state import LeadStatus
 from db.models import get_setting
@@ -58,8 +58,16 @@ def draft_node(founder_name: str, company: str, signal: str, product: str = "our
     - signal: {signal or "your recent updates"}
     - product: {product}
     - sender: {sender}
-    
-    Return a JSON array of exactly 3 strings representing the body of email 1, 2, and 3.
+
+    Return plain text in exactly this format:
+    EMAIL_1:
+    <body>
+
+    EMAIL_2:
+    <body>
+
+    EMAIL_3:
+    <body>
     """
     
     try:
@@ -69,15 +77,13 @@ def draft_node(founder_name: str, company: str, signal: str, product: str = "our
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt}
             ],
-            temperature=0.7
+            temperature=0.7,
         )
         content = response.choices[0].message.content.strip()
-        if content.startswith("```json"):
-            content = content[7:-3].strip()
-        elif content.startswith("```"):
-            content = content[3:-3].strip()
-            
-        sequence = json.loads(content)
+        parts = re.split(r"EMAIL_[123]:", content)
+        sequence = [part.strip() for part in parts if part.strip()]
+        if len(sequence) != 3:
+            raise ValueError("Draft response did not contain exactly three emails.")
         return {
             "email_sequence": sequence,
             "status": LeadStatus.READY_TO_SEND
