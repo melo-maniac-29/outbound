@@ -77,70 +77,82 @@ async def process_lead(query: str, max_companies: int, run_id: str):
             if not discovered:
                 continue
 
+            import asyncio
+            tasks = []
             for target in discovered:
-                run_snapshot = fetch_run(run_id)
-                if not run_snapshot or run_snapshot.get("stop_requested") or run_snapshot.get("status") == "STOPPED":
-                    finalize_run(run_id, "STOPPED", "Run stopped by user.")
-                    return
-                if good_count >= max_companies:
-                    break
-
                 domain = target["domain"]
                 if domain in seen_domains:
                     continue
-                if dedupe_across_db and find_existing_lead(domain):
+                
+                # Check DB in a thread
+                existing = await asyncio.to_thread(find_existing_lead, domain)
+                if dedupe_across_db and existing:
                     seen_domains.add(domain)
                     continue
-
                 seen_domains.add(domain)
-                lead_payload = enqueue_lead(
-                    workflow=workflow,
-                    run_id=run_id,
-                    search_query=query,
-                    company_name=target.get("company_name"),
-                    domain=domain,
-                    source_url=target["source_url"],
-                    source_type="tavily_search",
-                )
+                
+                def _enqueue():
+                    return enqueue_lead(
+                        workflow=workflow,
+                        run_id=run_id,
+                        search_query=query,
+                        company_name=target.get("company_name"),
+                        domain=domain,
+                        source_url=target["source_url"],
+                        source_type="tavily_search",
+                    )
+                lead_payload = await asyncio.to_thread(_enqueue)
                 if not lead_payload:
                     continue
+                    
+                tasks.append(run_workflow_for_lead(workflow, lead_payload))
+                
+            if tasks:
+                completed_leads = await asyncio.gather(*tasks, return_exceptions=True)
+                for completed_lead in completed_leads:
+                    if isinstance(completed_lead, Exception):
+                        continue
+                    item_status = getattr(completed_lead.status, "value", completed_lead.status)
+                    if item_status == "READY_TO_SEND":
+                        good_count += 1
+                        
+            run_snapshot = await asyncio.to_thread(fetch_run, run_id)
+            if not run_snapshot or run_snapshot.get("stop_requested") or run_snapshot.get("status") == "STOPPED":
+                await asyncio.to_thread(finalize_run, run_id, "STOPPED", "Run stopped by user.")
+                return
 
-                completed_lead = await run_workflow_for_lead(workflow, lead_payload)
-                item_status = getattr(completed_lead.status, "value", completed_lead.status)
-                if item_status == "READY_TO_SEND":
-                    good_count += 1
-                if good_count >= max_companies:
-                    break
-
-        finalize_run(run_id, "COMPLETED" if good_count >= max_companies else "EXHAUSTED")
+        await asyncio.to_thread(finalize_run, run_id, "COMPLETED" if good_count >= max_companies else "EXHAUSTED")
     except Exception as exc:
-        finalize_run(run_id, "FAILED", str(exc))
+        await asyncio.to_thread(finalize_run, run_id, "FAILED", str(exc))
         print(f"Run {run_id} failed: {exc}")
 
 
 async def process_domain(domain: str, label: str | None, run_id: str):
     from db.models import finalize_run
     from graph import compile_lead_graph
+    import asyncio
 
     try:
         workflow = compile_lead_graph()
         normalized = normalize_domain(domain)
-        lead_payload = enqueue_lead(
-            workflow=workflow,
-            run_id=run_id,
-            search_query=label or normalized,
-            company_name=label or normalized,
-            domain=normalized,
-            source_url=f"https://{normalized}",
-            source_type="manual_domain",
-        )
+        def _enqueue():
+            return enqueue_lead(
+                workflow=workflow,
+                run_id=run_id,
+                search_query=label or normalized,
+                company_name=label or normalized,
+                domain=normalized,
+                source_url=f"https://{normalized}",
+                source_type="manual_domain",
+            )
+        lead_payload = await asyncio.to_thread(_enqueue)
         if not lead_payload:
-            finalize_run(run_id, "EXHAUSTED", "Domain already exists in the lead database.")
+            await asyncio.to_thread(finalize_run, run_id, "EXHAUSTED", "Domain already exists in the lead database.")
             return
         await run_workflow_for_lead(workflow, lead_payload)
-        finalize_run(run_id, "COMPLETED")
+        await asyncio.to_thread(finalize_run, run_id, "COMPLETED")
     except Exception as exc:
-        finalize_run(run_id, "FAILED", str(exc))
+        await asyncio.to_thread(finalize_run, run_id, "FAILED", str(exc))
         print(f"Run {run_id} failed: {exc}")
 
 
@@ -189,7 +201,8 @@ async def run_workflow_for_lead(workflow, initial_lead):
     except Exception as exc:
         initial_lead.status = LeadStatus.RETRY_PENDING if initial_lead.retry_count < 3 else LeadStatus.DEAD_LEAD
         initial_lead.retry_count += 1
-        save_lead_to_db(initial_lead)
+        import asyncio
+        await asyncio.to_thread(save_lead_to_db, initial_lead)
         print(f"Workflow failed for {initial_lead.domain}: {exc}")
     return initial_lead
 
@@ -266,11 +279,11 @@ async def start_domain(req: DomainRequest, background_tasks: BackgroundTasks):
 
 
 @app.get("/api/leads")
-def get_leads():
+def get_leads(limit: int = 50, offset: int = 0):
     from db.models import fetch_all_leads
 
     try:
-        return {"leads": fetch_all_leads()}
+        return {"leads": fetch_all_leads(limit=limit, offset=offset)}
     except Exception as e:
         return {"leads": [], "error": str(e)}
 
@@ -304,10 +317,10 @@ def remove_lead(lead_id: str):
 
 
 @app.get("/api/runs")
-def get_runs():
+def get_runs(limit: int = 20, offset: int = 0):
     from db.models import fetch_runs
 
-    return {"runs": fetch_runs()}
+    return {"runs": fetch_runs(limit=limit, offset=offset)}
 
 
 @app.get("/api/runs/{run_id}")
@@ -394,7 +407,6 @@ def update_settings(req: SettingsRequest):
 def healthcheck():
     from db.models import init_db
 
-    init_db()
     return {"status": "ok"}
 
 

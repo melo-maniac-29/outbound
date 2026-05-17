@@ -5,6 +5,7 @@ from typing import Any
 
 from psycopg import connect
 from psycopg.rows import dict_row
+from psycopg_pool import ConnectionPool
 
 
 DEFAULT_DRAFT_SYSTEM_PROMPT = """You are an expert sales representative writing cold outreach emails.
@@ -35,8 +36,17 @@ def get_database_url() -> str:
     return database_url
 
 
+_pool = None
+
+def get_pool():
+    global _pool
+    if _pool is None:
+        _pool = ConnectionPool(get_database_url(), min_size=2, max_size=20, kwargs={"row_factory": dict_row})
+    return _pool
+
+
 def get_connection():
-    return connect(get_database_url(), row_factory=dict_row)
+    return get_pool().connection()
 
 
 def init_db():
@@ -177,7 +187,6 @@ def init_db():
 
 
 def save_lead_to_db(state):
-    init_db()
     with get_connection() as conn:
         with conn.cursor() as cursor:
             cursor.execute(
@@ -243,7 +252,6 @@ def save_lead_to_db(state):
 
 
 def create_run(run_id: str, query: str, requested_companies: int, source_type: str) -> dict[str, Any]:
-    init_db()
     payload = {
         "run_id": run_id,
         "query": query,
@@ -270,7 +278,6 @@ def create_run(run_id: str, query: str, requested_companies: int, source_type: s
 
 
 def update_run_counts(run_id: str):
-    init_db()
     with get_connection() as conn:
         with conn.cursor() as cursor:
             cursor.execute(
@@ -337,7 +344,6 @@ def touch_run(run_id: str):
 
 
 def request_run_stop(run_id: str) -> dict[str, Any] | None:
-    init_db()
     with get_connection() as conn:
         with conn.cursor() as cursor:
             cursor.execute(
@@ -355,7 +361,6 @@ def request_run_stop(run_id: str) -> dict[str, Any] | None:
 
 
 def delete_run(run_id: str, purge_leads: bool = True) -> bool:
-    init_db()
     with get_connection() as conn:
         with conn.cursor() as cursor:
             if purge_leads:
@@ -367,7 +372,6 @@ def delete_run(run_id: str, purge_leads: bool = True) -> bool:
 
 
 def delete_lead(lead_id: str) -> bool:
-    init_db()
     with get_connection() as conn:
         with conn.cursor() as cursor:
             cursor.execute("SELECT run_id FROM leads WHERE lead_id = %s", (lead_id,))
@@ -381,17 +385,15 @@ def delete_lead(lead_id: str) -> bool:
     return deleted
 
 
-def fetch_all_leads() -> list[dict[str, Any]]:
-    init_db()
+def fetch_all_leads(limit: int = 50, offset: int = 0) -> list[dict[str, Any]]:
     with get_connection() as conn:
         with conn.cursor() as cursor:
-            cursor.execute("SELECT * FROM leads ORDER BY updated_at DESC")
+            cursor.execute("SELECT * FROM leads ORDER BY updated_at DESC LIMIT %s OFFSET %s", (limit, offset))
             rows = cursor.fetchall()
     return [normalize_lead(row) for row in rows]
 
 
 def fetch_lead(lead_id: str) -> dict[str, Any] | None:
-    init_db()
     with get_connection() as conn:
         with conn.cursor() as cursor:
             cursor.execute("SELECT * FROM leads WHERE lead_id = %s", (lead_id,))
@@ -399,16 +401,14 @@ def fetch_lead(lead_id: str) -> dict[str, Any] | None:
     return normalize_lead(row) if row else None
 
 
-def fetch_runs() -> list[dict[str, Any]]:
-    init_db()
+def fetch_runs(limit: int = 20, offset: int = 0) -> list[dict[str, Any]]:
     with get_connection() as conn:
         with conn.cursor() as cursor:
-            cursor.execute("SELECT * FROM search_runs ORDER BY created_at DESC")
+            cursor.execute("SELECT * FROM search_runs ORDER BY created_at DESC LIMIT %s OFFSET %s", (limit, offset))
             return cursor.fetchall()
 
 
 def fetch_run(run_id: str) -> dict[str, Any] | None:
-    init_db()
     with get_connection() as conn:
         with conn.cursor() as cursor:
             cursor.execute("SELECT * FROM search_runs WHERE run_id = %s", (run_id,))
@@ -424,7 +424,6 @@ def fetch_run(run_id: str) -> dict[str, Any] | None:
 
 
 def fetch_summary() -> dict[str, Any]:
-    init_db()
     with get_connection() as conn:
         with conn.cursor() as cursor:
             cursor.execute(
@@ -462,7 +461,6 @@ def fetch_summary() -> dict[str, Any]:
 def find_existing_lead(domain: str | None) -> dict[str, Any] | None:
     if not domain:
         return None
-    init_db()
     with get_connection() as conn:
         with conn.cursor() as cursor:
             cursor.execute(
@@ -474,7 +472,6 @@ def find_existing_lead(domain: str | None) -> dict[str, Any] | None:
 
 
 def get_settings() -> dict[str, Any]:
-    init_db()
     with get_connection() as conn:
         with conn.cursor() as cursor:
             cursor.execute("SELECT key, value, updated_at FROM app_settings ORDER BY key ASC")
@@ -486,7 +483,6 @@ def get_settings() -> dict[str, Any]:
 
 
 def update_setting(key: str, text_value: str):
-    init_db()
     with get_connection() as conn:
         with conn.cursor() as cursor:
             cursor.execute(
@@ -502,7 +498,6 @@ def update_setting(key: str, text_value: str):
 
 
 def get_setting(key: str, default: str | None = None) -> str | None:
-    init_db()
     with get_connection() as conn:
         with conn.cursor() as cursor:
             cursor.execute("SELECT value FROM app_settings WHERE key = %s", (key,))

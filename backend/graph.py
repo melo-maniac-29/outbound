@@ -1,3 +1,4 @@
+import asyncio
 from datetime import datetime
 from typing import Optional, TypedDict
 from langgraph.graph import StateGraph, START, END
@@ -34,7 +35,7 @@ async def crawl_step(state: GraphState):
             md = await crawl_node(url)
             lead.status = LeadStatus.CRAWLED
             lead.source_url = url
-            save_lead_to_db(lead)
+            await asyncio.to_thread(save_lead_to_db, lead)
             return {"markdown": md, "lead": lead}
         except Exception as e:
             print(f"Crawl error: {e}")
@@ -121,7 +122,7 @@ async def build_profile_step(state: GraphState):
         email=lead.email,
     )
     lead.company_profile = data
-    save_lead_to_db(lead)
+    await asyncio.to_thread(save_lead_to_db, lead)
     return {"lead": lead, "company_profile": data}
 
 def pattern_guess_step(state: GraphState):

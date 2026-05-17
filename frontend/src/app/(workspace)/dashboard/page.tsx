@@ -2,29 +2,9 @@
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
-import { Activity, Database, Radar, RefreshCw, Search, Settings, Sparkles } from "lucide-react";
+import { Activity, Database, RefreshCw, Search, Settings } from "lucide-react";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
-
-type Lead = {
-  lead_id: string;
-  company_name: string | null;
-  domain: string | null;
-  search_query: string;
-  status: string;
-  email: string | null;
-};
-
-type Run = {
-  run_id: string;
-  query: string;
-  requested_companies: number;
-  discovered_companies: number;
-  processed_companies: number;
-  source_type: string;
-  status: string;
-  created_at: string;
-};
 
 type Summary = {
   total_leads: number;
@@ -37,6 +17,7 @@ type Summary = {
 export default function DashboardPage() {
   const [query, setQuery] = useState("");
   const [maxCompanies, setMaxCompanies] = useState(5);
+  const [recentRuns, setRecentRuns] = useState<any[]>([]);
   const [summary, setSummary] = useState<Summary>({
     total_leads: 0,
     active_leads: 0,
@@ -44,8 +25,6 @@ export default function DashboardPage() {
     dead_leads: 0,
     total_runs: 0,
   });
-  const [leads, setLeads] = useState<Lead[]>([]);
-  const [runs, setRuns] = useState<Run[]>([]);
   const [isSearching, setIsSearching] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -53,17 +32,14 @@ export default function DashboardPage() {
   const fetchDashboard = async () => {
     setIsRefreshing(true);
     try {
-      const [summaryRes, leadsRes, runsRes] = await Promise.all([
-        fetch(`${API_URL}/api/summary`),
-        fetch(`${API_URL}/api/leads`),
-        fetch(`${API_URL}/api/runs`),
-      ]);
-      const summaryData = await summaryRes.json();
-      const leadsData = await leadsRes.json();
-      const runsData = await runsRes.json();
+      const res = await fetch(`${API_URL}/api/summary`);
+      const summaryData = await res.json();
       setSummary(summaryData);
-      setLeads((leadsData.leads ?? []).slice(0, 8));
-      setRuns((runsData.runs ?? []).slice(0, 8));
+      
+      const runsRes = await fetch(`${API_URL}/api/runs?limit=3`);
+      const runsData = await runsRes.json();
+      setRecentRuns(runsData.runs ?? []);
+      
       setError(null);
     } catch (err) {
       console.error(err);
@@ -116,9 +92,9 @@ export default function DashboardPage() {
       <section className="hero-panel">
         <div className="hero-copy">
           <p className="eyebrow">Workspace Dashboard</p>
-          <h1>Search, build profiles, and draft outreach with review-first controls.</h1>
+          <h1>Dispatch Center</h1>
           <p className="hero-text">
-            Runs are tracked separately, leads persist in PostgreSQL, and draft behavior can be changed in settings.
+            Start new discovery runs and view high-level metrics. Navigate to Runs or Leads for detailed records.
           </p>
         </div>
         <div className="hero-meta">
@@ -149,7 +125,7 @@ export default function DashboardPage() {
           <strong>{summary.total_leads}</strong>
         </article>
         <article className="stat-card">
-          <span className="stat-label">Active</span>
+          <span className="stat-label">Active Processing</span>
           <strong>{summary.active_leads}</strong>
         </article>
         <article className="stat-card">
@@ -159,14 +135,14 @@ export default function DashboardPage() {
       </section>
 
       <section className="workspace">
-        <div className="panel command-panel">
+        <div className="panel command-panel" style={{ gridColumn: '1 / -1' }}>
           <div className="panel-head">
             <div>
               <p className="eyebrow">Dispatch</p>
-              <h2>Create a run</h2>
+              <h2>Create a new pipeline run</h2>
             </div>
           </div>
-          <form className="command-form" onSubmit={handleSubmit}>
+          <form className="command-form" onSubmit={handleSubmit} style={{ maxWidth: '600px' }}>
             <label className="field">
               <span>Query or direct domain</span>
               <input
@@ -194,52 +170,25 @@ export default function DashboardPage() {
               </button>
             </div>
           </form>
-          {error && <div className="error-banner">{error}</div>}
+          {error && <div className="error-banner" style={{ marginTop: '1rem' }}>{error}</div>}
         </div>
 
-        <div className="panel pipeline-panel">
+        <div className="panel" style={{ gridColumn: '1 / -1' }}>
           <div className="panel-head">
             <div>
-              <p className="eyebrow">Behavior</p>
-              <h2>What this does now</h2>
+              <p className="eyebrow">Activity</p>
+              <h2>Recent Runs</h2>
             </div>
+            <Link href="/runs" className="utility-link">View All</Link>
           </div>
-          <div className="info-grid single-column">
-            <div className="info-card">
-              <Radar size={18} />
-              <div>
-                <strong>Iterative discovery</strong>
-                <p>Search retries across query variants until your company target is met or attempts are exhausted.</p>
-              </div>
-            </div>
-            <div className="info-card">
-              <Sparkles size={18} />
-              <div>
-                <strong>Draft-only completion</strong>
-                <p>Runs stop at `READY_TO_SEND` for review. No mock send step is used anymore.</p>
-              </div>
-            </div>
-          </div>
-        </div>
-      </section>
-
-      <section className="workspace lower-workspace">
-        <div className="panel lead-list-panel">
-          <div className="panel-head">
-            <div>
-              <p className="eyebrow">Recent Runs</p>
-              <h2>Inspectable job history</h2>
-            </div>
-          </div>
-          <div className="lead-list">
-            {runs.map((run) => (
+          <div className="lead-list" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', display: 'grid' }}>
+            {recentRuns.map((run) => (
               <Link key={run.run_id} href={`/runs/${run.run_id}`} className="lead-item">
                 <div className="lead-item-top">
                   <strong>{run.query}</strong>
                   <span className={`status-badge status-${run.status}`}>{run.status}</span>
                 </div>
-                <p>{run.source_type}</p>
-                <div className="lead-item-meta">
+                <div className="lead-item-meta" style={{ marginTop: '12px' }}>
                   <span>
                     {run.discovered_companies}/{run.requested_companies} discovered
                   </span>
@@ -247,29 +196,11 @@ export default function DashboardPage() {
                 </div>
               </Link>
             ))}
-          </div>
-        </div>
-
-        <div className="panel detail-panel">
-          <div className="panel-head">
-            <div>
-              <p className="eyebrow">Recent Leads</p>
-              <h2>Open a lead profile</h2>
-            </div>
-          </div>
-          <div className="lead-list">
-            {leads.map((lead) => (
-              <Link key={lead.lead_id} href={`/leads/${lead.lead_id}`} className="lead-item">
-                <div className="lead-item-top">
-                  <strong>{lead.company_name || lead.domain || lead.search_query}</strong>
-                  <span className={`status-badge status-${lead.status}`}>{lead.status.replaceAll("_", " ")}</span>
-                </div>
-                <p>{lead.domain || lead.search_query}</p>
-                <div className="lead-item-meta">
-                  <span>{lead.email || "email pending"}</span>
-                </div>
-              </Link>
-            ))}
+            {recentRuns.length === 0 && !isRefreshing && (
+              <div className="empty-state">
+                <p>No recent runs found.</p>
+              </div>
+            )}
           </div>
         </div>
       </section>
