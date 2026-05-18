@@ -363,6 +363,12 @@ def request_run_stop(run_id: str) -> dict[str, Any] | None:
 def delete_run(run_id: str, purge_leads: bool = True) -> bool:
     with get_connection() as conn:
         with conn.cursor() as cursor:
+            cursor.execute("SELECT status FROM search_runs WHERE run_id = %s", (run_id,))
+            run = cursor.fetchone()
+            if not run:
+                return False
+            if run["status"] == "RUNNING":
+                raise RuntimeError("Cannot delete a running job. Stop it first.")
             if purge_leads:
                 cursor.execute("DELETE FROM leads WHERE run_id = %s", (run_id,))
             cursor.execute("DELETE FROM search_runs WHERE run_id = %s", (run_id,))
@@ -461,11 +467,12 @@ def fetch_summary() -> dict[str, Any]:
 def find_existing_lead(domain: str | None) -> dict[str, Any] | None:
     if not domain:
         return None
+    normalized = domain.strip().lower().removeprefix("www.")
     with get_connection() as conn:
         with conn.cursor() as cursor:
             cursor.execute(
                 "SELECT * FROM leads WHERE domain = %s ORDER BY updated_at DESC LIMIT 1",
-                (domain,),
+                (normalized,),
             )
             row = cursor.fetchone()
     return normalize_lead(row) if row else None

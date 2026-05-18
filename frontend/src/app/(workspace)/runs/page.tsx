@@ -26,6 +26,7 @@ export default function RunsPage() {
     setIsRefreshing(true);
     try {
       const res = await fetch(`${API_URL}/api/runs?limit=50`);
+      if (!res.ok) throw new Error(`Runs request failed with ${res.status}`);
       const data = await res.json();
       setRuns(data.runs ?? []);
       setError(null);
@@ -38,7 +39,10 @@ export default function RunsPage() {
   };
 
   useEffect(() => {
-    fetchRuns();
+    const loadRuns = async () => {
+      await fetchRuns();
+    };
+    void loadRuns();
   }, []);
 
   return (

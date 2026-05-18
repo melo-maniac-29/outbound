@@ -38,14 +38,27 @@ export default function LeadDetailPage() {
   const [loading, setLoading] = useState(true);
   const [working, setWorking] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const router = useRouter();
 
   useEffect(() => {
     const load = async () => {
-      const res = await fetch(`${API_URL}/api/leads/${params.leadId}`);
-      const data = await res.json();
-      setLead(data);
-      setLoading(false);
+      try {
+        const res = await fetch(`${API_URL}/api/leads/${params.leadId}`);
+        if (!res.ok) {
+          const data = await res.json().catch(() => null);
+          throw new Error(data?.detail ?? `Lead request failed with ${res.status}`);
+        }
+        const data = await res.json();
+        setLead(data);
+        setLoadError(null);
+      } catch (err) {
+        console.error(err);
+        setLead(null);
+        setLoadError(err instanceof Error ? err.message : "Failed to load lead.");
+      } finally {
+        setLoading(false);
+      }
     };
     void load();
   }, [params.leadId]);
@@ -53,15 +66,21 @@ export default function LeadDetailPage() {
   const deleteLead = async () => {
     setWorking(true);
     setMessage(null);
-    const res = await fetch(`${API_URL}/api/leads/${params.leadId}`, { method: "DELETE" });
-    if (res.ok) {
-      router.push("/dashboard");
-      router.refresh();
-      return;
+    try {
+      const res = await fetch(`${API_URL}/api/leads/${params.leadId}`, { method: "DELETE" });
+      if (res.ok) {
+        router.push("/dashboard");
+        router.refresh();
+        return;
+      }
+      const data = await res.json().catch(() => null);
+      setMessage(data?.detail ?? "Failed to delete lead.");
+    } catch (err) {
+      console.error(err);
+      setMessage("Failed to delete lead.");
+    } finally {
+      setWorking(false);
     }
-    const data = await res.json().catch(() => null);
-    setMessage(data?.detail ?? "Failed to delete lead.");
-    setWorking(false);
   };
 
   if (loading) {
@@ -78,7 +97,7 @@ export default function LeadDetailPage() {
   if (!lead) {
     return (
       <main className="shell">
-        <div className="panel empty-state">Lead not found.</div>
+        <div className="panel empty-state">{loadError ?? "Lead not found."}</div>
       </main>
     );
   }

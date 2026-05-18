@@ -159,7 +159,8 @@ async def process_domain(domain: str, label: str | None, run_id: str):
 def normalize_domain(domain_or_url: str) -> str:
     value = domain_or_url.strip()
     parsed = urlparse(value if "://" in value else f"https://{value}")
-    return parsed.netloc or parsed.path
+    domain = (parsed.netloc or parsed.path).lower().removeprefix("www.")
+    return domain
 
 
 def enqueue_lead(
@@ -174,6 +175,7 @@ def enqueue_lead(
     from db.models import find_existing_lead, save_lead_to_db
     from state import LeadState, LeadStatus
 
+    domain = normalize_domain(domain)
     existing = find_existing_lead(domain)
     if existing:
         return None
@@ -195,15 +197,38 @@ def enqueue_lead(
 async def run_workflow_for_lead(workflow, initial_lead):
     from db.models import save_lead_to_db
     from state import LeadStatus
+    import asyncio
 
-    try:
-        await workflow.ainvoke({"lead": initial_lead, "markdown": None, "personalization_hook": None, "company_profile": None})
-    except Exception as exc:
-        initial_lead.status = LeadStatus.RETRY_PENDING if initial_lead.retry_count < 3 else LeadStatus.DEAD_LEAD
-        initial_lead.retry_count += 1
-        import asyncio
+    max_attempts = 4
+    last_exc: Exception | None = None
+
+    for attempt in range(max_attempts):
+        lead_snapshot = initial_lead.model_copy(deep=True)
+        try:
+            await workflow.ainvoke(
+                {
+                    "lead": lead_snapshot,
+                    "markdown": None,
+                    "personalization_hook": None,
+                    "company_profile": None,
+                }
+            )
+            initial_lead = lead_snapshot
+            break
+        except Exception as exc:
+            last_exc = exc
+            lead_snapshot.retry_count = initial_lead.retry_count + 1
+            lead_snapshot.status = LeadStatus.RETRY_PENDING if attempt < max_attempts - 1 else LeadStatus.DEAD_LEAD
+            await asyncio.to_thread(save_lead_to_db, lead_snapshot)
+            initial_lead = lead_snapshot
+            if attempt < max_attempts - 1:
+                await asyncio.sleep(2 ** attempt)
+            print(f"Workflow failed for {initial_lead.domain} (attempt {attempt + 1}/{max_attempts}): {exc}")
+
+    if last_exc and initial_lead.status != LeadStatus.DEAD_LEAD:
+        initial_lead.status = LeadStatus.DEAD_LEAD
         await asyncio.to_thread(save_lead_to_db, initial_lead)
-        print(f"Workflow failed for {initial_lead.domain}: {exc}")
+        print(f"Workflow exhausted retries for {initial_lead.domain}: {last_exc}")
     return initial_lead
 
 
@@ -355,9 +380,10 @@ def remove_run(run_id: str, purge_leads: bool = True):
     run = fetch_run(run_id)
     if not run:
         raise HTTPException(status_code=404, detail="Run not found")
-    if run.get("status") == "RUNNING" and not purge_leads:
-        raise HTTPException(status_code=409, detail="Stop the run before deleting it.")
-    deleted = delete_run(run_id, purge_leads=purge_leads)
+    try:
+        deleted = delete_run(run_id, purge_leads=purge_leads)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     if not deleted:
         raise HTTPException(status_code=404, detail="Run not found")
     return {"status": "deleted", "run_id": run_id, "purge_leads": purge_leads}

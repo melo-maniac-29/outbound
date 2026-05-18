@@ -14,16 +14,25 @@ export default function SettingsPage() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   useEffect(() => {
     const load = async () => {
-      const res = await fetch(`${API_URL}/api/settings`);
-      const data = await res.json();
-      setPrompt(data.draft_system_prompt ?? "");
-      setDedupeAcrossDb((data.search_dedupe_across_db ?? "true").toString().toLowerCase() === "true");
-      setBucketRounds((data.search_bucket_rounds ?? "6").toString());
-      setVariantLimit((data.search_variant_limit ?? "4").toString());
-      setLoading(false);
+      try {
+        const res = await fetch(`${API_URL}/api/settings`);
+        if (!res.ok) throw new Error(`Settings request failed with ${res.status}`);
+        const data = await res.json();
+        setPrompt(data.draft_system_prompt ?? "");
+        setDedupeAcrossDb((data.search_dedupe_across_db ?? "true").toString().toLowerCase() === "true");
+        setBucketRounds((data.search_bucket_rounds ?? "6").toString());
+        setVariantLimit((data.search_variant_limit ?? "4").toString());
+        setLoadError(null);
+      } catch (err) {
+        console.error(err);
+        setLoadError(err instanceof Error ? err.message : "Failed to load settings.");
+      } finally {
+        setLoading(false);
+      }
     };
     void load();
   }, []);
@@ -67,6 +76,8 @@ export default function SettingsPage() {
             <RefreshCw className="animate-spin" />
             Loading settings...
           </div>
+        ) : loadError ? (
+          <div className="empty-state">{loadError}</div>
         ) : (
           <>
             <label className="field">

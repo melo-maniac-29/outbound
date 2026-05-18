@@ -24,6 +24,7 @@ export default function LeadsPage() {
     setIsRefreshing(true);
     try {
       const res = await fetch(`${API_URL}/api/leads?limit=100`);
+      if (!res.ok) throw new Error(`Leads request failed with ${res.status}`);
       const data = await res.json();
       setLeads(data.leads ?? []);
       setError(null);
@@ -36,7 +37,10 @@ export default function LeadsPage() {
   };
 
   useEffect(() => {
-    fetchLeads();
+    const loadLeads = async () => {
+      await fetchLeads();
+    };
+    void loadLeads();
   }, []);
 
   return (

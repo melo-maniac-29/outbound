@@ -34,20 +34,37 @@ export default function RunDetailPage() {
   const [loading, setLoading] = useState(true);
   const [working, setWorking] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const router = useRouter();
 
   useEffect(() => {
     const load = async () => {
-      const res = await fetch(`${API_URL}/api/runs/${params.runId}`);
-      const data = await res.json();
-      setRun(data);
-      setLoading(false);
+      try {
+        const res = await fetch(`${API_URL}/api/runs/${params.runId}`);
+        if (!res.ok) {
+          const data = await res.json().catch(() => null);
+          throw new Error(data?.detail ?? `Run request failed with ${res.status}`);
+        }
+        const data = await res.json();
+        setRun(data);
+        setLoadError(null);
+      } catch (err) {
+        console.error(err);
+        setRun(null);
+        setLoadError(err instanceof Error ? err.message : "Failed to load run.");
+      } finally {
+        setLoading(false);
+      }
     };
     void load();
   }, [params.runId]);
 
   const refreshRun = async () => {
     const res = await fetch(`${API_URL}/api/runs/${params.runId}`);
+    if (!res.ok) {
+      const data = await res.json().catch(() => null);
+      throw new Error(data?.detail ?? `Run request failed with ${res.status}`);
+    }
     const data = await res.json();
     setRun(data);
   };
@@ -55,29 +72,41 @@ export default function RunDetailPage() {
   const stopRun = async () => {
     setWorking(true);
     setMessage(null);
-    const res = await fetch(`${API_URL}/api/runs/${params.runId}/stop`, { method: "POST" });
-    if (res.ok) {
-      setMessage("Run stop requested.");
-      await refreshRun();
-    } else {
-      const data = await res.json().catch(() => null);
-      setMessage(data?.detail ?? "Failed to stop run.");
+    try {
+      const res = await fetch(`${API_URL}/api/runs/${params.runId}/stop`, { method: "POST" });
+      if (res.ok) {
+        setMessage("Run stop requested.");
+        await refreshRun();
+      } else {
+        const data = await res.json().catch(() => null);
+        setMessage(data?.detail ?? "Failed to stop run.");
+      }
+    } catch (err) {
+      console.error(err);
+      setMessage("Failed to stop run.");
+    } finally {
+      setWorking(false);
     }
-    setWorking(false);
   };
 
   const deleteRun = async () => {
     setWorking(true);
     setMessage(null);
-    const res = await fetch(`${API_URL}/api/runs/${params.runId}?purge_leads=true`, { method: "DELETE" });
-    if (res.ok) {
-      router.push("/dashboard");
-      router.refresh();
-      return;
+    try {
+      const res = await fetch(`${API_URL}/api/runs/${params.runId}?purge_leads=true`, { method: "DELETE" });
+      if (res.ok) {
+        router.push("/dashboard");
+        router.refresh();
+        return;
+      }
+      const data = await res.json().catch(() => null);
+      setMessage(data?.detail ?? "Failed to delete run.");
+    } catch (err) {
+      console.error(err);
+      setMessage("Failed to delete run.");
+    } finally {
+      setWorking(false);
     }
-    const data = await res.json().catch(() => null);
-    setMessage(data?.detail ?? "Failed to delete run.");
-    setWorking(false);
   };
 
   if (loading) {
@@ -94,7 +123,7 @@ export default function RunDetailPage() {
   if (!run) {
     return (
       <main className="shell">
-        <div className="panel empty-state">Run not found.</div>
+        <div className="panel empty-state">{loadError ?? "Run not found."}</div>
       </main>
     );
   }

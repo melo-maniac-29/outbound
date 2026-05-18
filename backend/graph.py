@@ -14,12 +14,14 @@ from nodes.validate import validate_node
 from nodes.personalize import personalize_node
 from nodes.draft import draft_node
 from nodes.outreach import outreach_node
+
+
 class GraphState(TypedDict):
     lead: LeadState
     markdown: Optional[str]
     personalization_hook: Optional[str]
     company_profile: Optional[dict]
-    
+
     # Temporary fields for parallel extraction
     ext_founder: Optional[dict]
     ext_services: Optional[list]
@@ -44,6 +46,7 @@ async def crawl_step(state: GraphState):
     save_lead_to_db(lead)
     return {"lead": lead, "markdown": None}
 
+
 async def extract_founder_step(state: GraphState):
     md = state.get("markdown")
     if md:
@@ -65,18 +68,36 @@ async def extract_signals_step(state: GraphState):
         return {"ext_signals": data.get("signals", [])}
     return {"ext_signals": []}
 
+
+async def extract_all_step(state: GraphState):
+    md = state.get("markdown")
+    if not md:
+        return {"ext_founder": {}, "ext_services": [], "ext_signals": []}
+
+    founder_data, services_data, signals_data = await asyncio.gather(
+        extract_founder_node(md),
+        extract_services_node(md),
+        extract_signals_node(md),
+    )
+    return {
+        "ext_founder": founder_data or {},
+        "ext_services": (services_data or {}).get("services", []),
+        "ext_signals": (signals_data or {}).get("signals", []),
+    }
+
+
 def merge_extractions_step(state: GraphState):
     lead = state["lead"]
     founder_data = state.get("ext_founder", {})
-    
+
     lead.founder_name = founder_data.get("founder_name")
     lead.founder_linkedin = founder_data.get("linkedin")
     lead.founder_confidence = founder_data.get("confidence", 0.0)
-    
+
     lead.services = state.get("ext_services", [])
     lead.signals = state.get("ext_signals", [])
     lead.extraction_timestamp = datetime.utcnow()
-    
+
     lead.status = LeadStatus.EXTRACTED
     save_lead_to_db(lead)
     return {"lead": lead}
@@ -201,15 +222,16 @@ def compile_lead_graph():
     edges defined in the architecture Readme.
     """
     workflow = StateGraph(GraphState)
-    
+
     workflow.add_node("crawl_node", crawl_step)
+    workflow.add_node("extract_all_node", extract_all_step)
     workflow.add_node("extract_founder", extract_founder_step)
     workflow.add_node("extract_services", extract_services_step)
     workflow.add_node("extract_signals", extract_signals_step)
     workflow.add_node("merge_extractions", merge_extractions_step)
     workflow.add_node("linkedin_lookup_node", linkedin_lookup_step)
     workflow.add_node("dead_lead_node", dead_lead_step)
-    
+
     workflow.add_node("enrich_node", enrich_step)
     workflow.add_node("build_profile_node", build_profile_step)
     workflow.add_node("pattern_guess_node", pattern_guess_step)
@@ -217,37 +239,25 @@ def compile_lead_graph():
     workflow.add_node("personalize_node", personalize_step)
     workflow.add_node("draft_node", draft_step)
     workflow.add_node("outreach_node", outreach_step)
-    
+
     workflow.add_edge(START, "crawl_node")
-    
-    # Fan out
-    workflow.add_edge("crawl_node", "extract_founder")
-    workflow.add_edge("crawl_node", "extract_services")
-    workflow.add_edge("crawl_node", "extract_signals")
-    
-    # Fan in
-    workflow.add_edge("extract_founder", "merge_extractions")
-    workflow.add_edge("extract_services", "merge_extractions")
-    workflow.add_edge("extract_signals", "merge_extractions")
-    
-    # Conditional branch after merging extraction
+
+    workflow.add_edge("crawl_node", "extract_all_node")
+    workflow.add_edge("extract_all_node", "merge_extractions")
+
     workflow.add_conditional_edges("merge_extractions", check_founder_confidence)
     workflow.add_edge("dead_lead_node", END)
-    
-    # Conditional branch after enrichment
+
     workflow.add_conditional_edges("build_profile_node", check_email_confidence)
     workflow.add_edge("enrich_node", "build_profile_node")
     workflow.add_edge("linkedin_lookup_node", "enrich_node")
-    
-    # Pattern guess merges back into validation
+
     workflow.add_edge("pattern_guess_node", "validate_node")
-    
-    # Conditional branch after validation
+
     workflow.add_conditional_edges("validate_node", check_validation)
-    
-    # Linear path to the end
+
     workflow.add_edge("personalize_node", "draft_node")
     workflow.add_edge("draft_node", "outreach_node")
     workflow.add_edge("outreach_node", END)
-    
+
     return workflow.compile()

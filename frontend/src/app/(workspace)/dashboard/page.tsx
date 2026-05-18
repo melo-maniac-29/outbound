@@ -6,6 +6,16 @@ import { Activity, Database, RefreshCw, Search, Settings } from "lucide-react";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
+type RunSummary = {
+  run_id: string;
+  query: string;
+  requested_companies: number;
+  discovered_companies: number;
+  processed_companies: number;
+  source_type: string;
+  status: string;
+};
+
 type Summary = {
   total_leads: number;
   active_leads: number;
@@ -17,7 +27,7 @@ type Summary = {
 export default function DashboardPage() {
   const [query, setQuery] = useState("");
   const [maxCompanies, setMaxCompanies] = useState(5);
-  const [recentRuns, setRecentRuns] = useState<any[]>([]);
+  const [recentRuns, setRecentRuns] = useState<RunSummary[]>([]);
   const [summary, setSummary] = useState<Summary>({
     total_leads: 0,
     active_leads: 0,
@@ -33,13 +43,15 @@ export default function DashboardPage() {
     setIsRefreshing(true);
     try {
       const res = await fetch(`${API_URL}/api/summary`);
+      if (!res.ok) throw new Error(`Summary request failed with ${res.status}`);
       const summaryData = await res.json();
       setSummary(summaryData);
-      
+
       const runsRes = await fetch(`${API_URL}/api/runs?limit=3`);
+      if (!runsRes.ok) throw new Error(`Runs request failed with ${runsRes.status}`);
       const runsData = await runsRes.json();
       setRecentRuns(runsData.runs ?? []);
-      
+
       setError(null);
     } catch (err) {
       console.error(err);
