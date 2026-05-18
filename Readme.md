@@ -2,6 +2,11 @@
 **Architecture & Technical Documentation**  
 Assessment Submission · Allen Bobby
 
+Primary docs:
+
+- [End-to-end flow](docs/end-to-end.md)
+- [Architecture diagram](docs/outbound-architecture.excalidraw.json)
+
 ---
 
 # 1. Overview
