@@ -1,4 +1,5 @@
 import uuid
+from contextlib import asynccontextmanager
 from urllib.parse import urlparse
 
 from dotenv import load_dotenv
@@ -8,7 +9,16 @@ from pydantic import BaseModel, Field
 
 load_dotenv()
 
-app = FastAPI(title="Outbound AI Agent API")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    from db.models import init_db
+
+    init_db()
+    yield
+
+
+app = FastAPI(title="Outbound AI Agent API", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -17,13 +27,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-
-@app.on_event("startup")
-def startup_event():
-    from db.models import init_db
-
-    init_db()
 
 
 class SearchRequest(BaseModel):
@@ -44,6 +47,8 @@ class SettingsRequest(BaseModel):
 
 
 async def process_lead(query: str, max_companies: int, run_id: str):
+    import asyncio
+
     from db.models import finalize_run, fetch_run, find_existing_lead, get_bool_setting, get_int_setting
     from graph import compile_lead_graph
     from nodes.search import search_node
@@ -53,75 +58,131 @@ async def process_lead(query: str, max_companies: int, run_id: str):
         dedupe_across_db = get_bool_setting("search_dedupe_across_db", True)
         bucket_rounds = max(1, get_int_setting("search_bucket_rounds", 6))
         variant_limit = max(1, get_int_setting("search_variant_limit", 4))
-        search_target = min(max(max_companies * 4, 10), 25)
+        search_target = min(40, max(15, max_companies * 8))
         seen_domains: set[str] = set()
         good_count = 0
-        bucket_queries = build_bucket_queries(query, bucket_rounds)
+        workflows_started = 0
 
-        for bucket_query in bucket_queries:
+        # Multi-wave search: one pass through base buckets rarely fills a high target.
+        max_waves = max(12, min(48, max_companies * 6))
+        max_lead_attempts = min(350, max(50, max_companies * 40))
+        stalled_waves = 0
+        normalized_q = query.strip()
+        wave = 0
+
+        while good_count < max_companies and wave < max_waves and workflows_started < max_lead_attempts:
             run_snapshot = fetch_run(run_id)
             if not run_snapshot or run_snapshot.get("stop_requested") or run_snapshot.get("status") == "STOPPED":
                 finalize_run(run_id, "STOPPED", "Run stopped by user.")
                 return
-            if good_count >= max_companies:
-                break
 
-            remaining = max_companies - good_count
-            results = search_node(
-                bucket_query,
-                max_companies=min(max(remaining * 4, 10), search_target),
-                max_attempts=variant_limit,
-                exclude_domains=seen_domains,
-            )
-            discovered = results.get("discovered_urls", [])
-            if not discovered:
-                continue
+            good_at_wave_start = good_count
+            attempts_this_wave = 0
 
-            import asyncio
-            tasks = []
-            for target in discovered:
-                domain = target["domain"]
-                if domain in seen_domains:
+            if wave == 0:
+                bucket_queries = build_bucket_queries(query, bucket_rounds)
+            else:
+                bucket_queries = build_extension_queries(normalized_q, wave, count=10)
+
+            for bucket_query in bucket_queries:
+                run_snapshot = fetch_run(run_id)
+                if not run_snapshot or run_snapshot.get("stop_requested") or run_snapshot.get("status") == "STOPPED":
+                    finalize_run(run_id, "STOPPED", "Run stopped by user.")
+                    return
+                if good_count >= max_companies:
+                    break
+                if workflows_started >= max_lead_attempts:
+                    break
+
+                remaining = max_companies - good_count
+                slot_budget = max(0, remaining)
+                results = search_node(
+                    bucket_query,
+                    max_companies=min(max(remaining * 4, 10), search_target),
+                    max_attempts=variant_limit,
+                    exclude_domains=seen_domains,
+                )
+                discovered = results.get("discovered_urls", [])
+                if not discovered:
                     continue
-                
-                # Check DB in a thread
-                existing = await asyncio.to_thread(find_existing_lead, domain)
-                if dedupe_across_db and existing:
-                    seen_domains.add(domain)
-                    continue
-                seen_domains.add(domain)
-                
-                def _enqueue():
-                    return enqueue_lead(
-                        workflow=workflow,
-                        run_id=run_id,
-                        search_query=query,
-                        company_name=target.get("company_name"),
-                        domain=domain,
-                        source_url=target["source_url"],
-                        source_type="tavily_search",
-                    )
-                lead_payload = await asyncio.to_thread(_enqueue)
-                if not lead_payload:
-                    continue
-                    
-                tasks.append(run_workflow_for_lead(workflow, lead_payload))
-                
-            if tasks:
-                completed_leads = await asyncio.gather(*tasks, return_exceptions=True)
-                for completed_lead in completed_leads:
-                    if isinstance(completed_lead, Exception):
+
+                tasks = []
+                for target in discovered:
+                    if len(tasks) >= slot_budget:
+                        break
+                    if workflows_started + len(tasks) >= max_lead_attempts:
+                        break
+                    domain = target["domain"]
+                    if domain in seen_domains:
                         continue
-                    item_status = getattr(completed_lead.status, "value", completed_lead.status)
-                    if item_status == "READY_TO_SEND":
-                        good_count += 1
-                        
-            run_snapshot = await asyncio.to_thread(fetch_run, run_id)
-            if not run_snapshot or run_snapshot.get("stop_requested") or run_snapshot.get("status") == "STOPPED":
-                await asyncio.to_thread(finalize_run, run_id, "STOPPED", "Run stopped by user.")
-                return
 
-        await asyncio.to_thread(finalize_run, run_id, "COMPLETED" if good_count >= max_companies else "EXHAUSTED")
+                    existing = await asyncio.to_thread(find_existing_lead, domain)
+                    if dedupe_across_db and existing:
+                        seen_domains.add(domain)
+                        continue
+                    seen_domains.add(domain)
+
+                    def _enqueue():
+                        return enqueue_lead(
+                            workflow=workflow,
+                            run_id=run_id,
+                            search_query=query,
+                            company_name=target.get("company_name"),
+                            domain=domain,
+                            source_url=target["source_url"],
+                            source_type="tavily_search",
+                        )
+
+                    lead_payload = await asyncio.to_thread(_enqueue)
+                    if not lead_payload:
+                        continue
+
+                    tasks.append(run_workflow_for_lead(workflow, lead_payload))
+
+                if tasks:
+                    attempts_this_wave += len(tasks)
+                    workflows_started += len(tasks)
+                    completed_leads = await asyncio.gather(*tasks, return_exceptions=True)
+                    for completed_lead in completed_leads:
+                        if isinstance(completed_lead, Exception):
+                            continue
+                        item_status = getattr(completed_lead.status, "value", completed_lead.status)
+                        if item_status == "READY_TO_SEND":
+                            good_count += 1
+
+                run_snapshot = await asyncio.to_thread(fetch_run, run_id)
+                if not run_snapshot or run_snapshot.get("stop_requested") or run_snapshot.get("status") == "STOPPED":
+                    await asyncio.to_thread(finalize_run, run_id, "STOPPED", "Run stopped by user.")
+                    return
+
+            if good_count > good_at_wave_start or attempts_this_wave > 0:
+                stalled_waves = 0
+            else:
+                stalled_waves += 1
+                if stalled_waves >= 3:
+                    break
+
+            wave += 1
+
+        if good_count >= max_companies:
+            await asyncio.to_thread(finalize_run, run_id, "COMPLETED")
+        elif workflows_started >= max_lead_attempts:
+            await asyncio.to_thread(
+                finalize_run,
+                run_id,
+                "EXHAUSTED",
+                "Maximum lead attempts for this run reached before the draft-ready goal.",
+            )
+        elif stalled_waves >= 3:
+            await asyncio.to_thread(
+                finalize_run,
+                run_id,
+                "EXHAUSTED",
+                "Search stalled: no new leads or progress after multiple waves.",
+            )
+        else:
+            await asyncio.to_thread(finalize_run, run_id, "EXHAUSTED")
+
     except Exception as exc:
         await asyncio.to_thread(finalize_run, run_id, "FAILED", str(exc))
         print(f"Run {run_id} failed: {exc}")
@@ -275,6 +336,39 @@ def build_brand_queries(query: str, bucket_rounds: int) -> list[str]:
 def is_brand_query(query: str) -> bool:
     tokens = [token for token in query.split() if token]
     return len(tokens) == 1 and len(query) <= 24 and not query.startswith("http")
+
+
+def build_extension_queries(query: str, wave: int, count: int) -> list[str]:
+    """
+    Extra Tavily query variants after the primary bucket list is exhausted.
+    Rotates by wave so repeated passes keep trying new phrasing.
+    """
+    normalized = query.strip()
+    templates = [
+        "{q} founder",
+        "{q} CEO linkedin",
+        "{q} owner",
+        "{q} leadership team",
+        "{q} boutique agency",
+        "{q} email marketing team",
+        "{q} agency contact",
+        "{q} small marketing agency",
+        "{q} agency founder",
+        "{q} marketing agency founders",
+        "{q} principal agency",
+        "{q} managing director",
+    ]
+    n = len(templates)
+    if n == 0 or count <= 0:
+        return []
+    start = ((wave - 1) * max(1, count // 2)) % n
+    out: list[str] = []
+    for i in range(count):
+        idx = (start + i) % n
+        candidate = templates[idx].format(q=normalized).strip()
+        if candidate and candidate not in out:
+            out.append(candidate)
+    return out
 
 
 @app.post("/api/search")
@@ -431,8 +525,6 @@ def update_settings(req: SettingsRequest):
 
 @app.get("/api/health")
 def healthcheck():
-    from db.models import init_db
-
     return {"status": "ok"}
 
 

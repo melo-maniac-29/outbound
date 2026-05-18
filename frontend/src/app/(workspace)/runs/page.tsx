@@ -12,6 +12,7 @@ type Run = {
   requested_companies: number;
   discovered_companies: number;
   processed_companies: number;
+  ready_to_send_count?: number;
   source_type: string;
   status: string;
   created_at: string;
@@ -66,7 +67,9 @@ export default function RunsPage() {
       <section className="workspace">
         <div className="panel" style={{ gridColumn: '1 / -1' }}>
           <div className="lead-list">
-            {runs.map((run) => (
+            {runs.map((run) => {
+              const ready = run.ready_to_send_count ?? 0;
+              return (
               <Link key={run.run_id} href={`/runs/${run.run_id}`} className="lead-item">
                 <div className="lead-item-top">
                   <strong>{run.query}</strong>
@@ -75,13 +78,16 @@ export default function RunsPage() {
                 <p>{run.source_type}</p>
                 <div className="lead-item-meta">
                   <span>
-                    {run.discovered_companies}/{run.requested_companies} discovered
+                    {ready}/{run.requested_companies} draft-ready
                   </span>
-                  <span>{run.processed_companies} processed</span>
+                  <span>
+                    {run.discovered_companies} attempted · {run.processed_companies} finished
+                  </span>
                   <ArrowRight size={14} />
                 </div>
               </Link>
-            ))}
+              );
+            })}
             {runs.length === 0 && !isRefreshing && (
               <div className="empty-state">
                 <Activity size={32} />

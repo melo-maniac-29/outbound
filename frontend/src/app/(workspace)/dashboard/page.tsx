@@ -12,6 +12,8 @@ type RunSummary = {
   requested_companies: number;
   discovered_companies: number;
   processed_companies: number;
+  /** Draft-ready leads in this run (goal progress vs requested_companies). */
+  ready_to_send_count?: number;
   source_type: string;
   status: string;
 };
@@ -175,6 +177,10 @@ export default function DashboardPage() {
                   value={maxCompanies}
                   onChange={(e) => setMaxCompanies(Number(e.target.value) || 1)}
                 />
+                <small className="supporting-text" style={{ marginTop: "0.35rem", display: "block" }}>
+                  Target draft-ready count. Search runs in multiple waves until this goal, then stops if results stall,
+                  Tavily has nothing new, or the run hits its lead-attempt cap (check run error when EXHAUSTED).
+                </small>
               </label>
               <button className="primary-button" type="submit" disabled={isSearching}>
                 {isSearching ? <RefreshCw size={18} className="animate-spin" /> : <Search size={18} />}
@@ -194,7 +200,9 @@ export default function DashboardPage() {
             <Link href="/runs" className="utility-link">View All</Link>
           </div>
           <div className="lead-list" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', display: 'grid' }}>
-            {recentRuns.map((run) => (
+            {recentRuns.map((run) => {
+              const ready = run.ready_to_send_count ?? 0;
+              return (
               <Link key={run.run_id} href={`/runs/${run.run_id}`} className="lead-item">
                 <div className="lead-item-top">
                   <strong>{run.query}</strong>
@@ -202,12 +210,15 @@ export default function DashboardPage() {
                 </div>
                 <div className="lead-item-meta" style={{ marginTop: '12px' }}>
                   <span>
-                    {run.discovered_companies}/{run.requested_companies} discovered
+                    {ready}/{run.requested_companies} draft-ready
                   </span>
-                  <span>{run.processed_companies} processed</span>
+                  <span>
+                    {run.discovered_companies} leads attempted · {run.processed_companies} finished
+                  </span>
                 </div>
               </Link>
-            ))}
+              );
+            })}
             {recentRuns.length === 0 && !isRefreshing && (
               <div className="empty-state">
                 <p>No recent runs found.</p>

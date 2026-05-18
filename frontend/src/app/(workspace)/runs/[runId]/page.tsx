@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
-import { ArrowLeft, Building2, Mail, RefreshCw, Square, Trash2, User } from "lucide-react";
+import { Activity, ArrowLeft, Building2, CheckCircle2, RefreshCw, Square, Trash2, User, Users } from "lucide-react";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
@@ -22,6 +22,7 @@ type RunDetail = {
   requested_companies: number;
   discovered_companies: number;
   processed_companies: number;
+  ready_to_send_count?: number;
   source_type: string;
   status: string;
   error?: string | null;
@@ -128,6 +129,11 @@ export default function RunDetailPage() {
     );
   }
 
+  const draftReadyCount =
+    typeof run.ready_to_send_count === "number"
+      ? run.ready_to_send_count
+      : run.leads.filter((l) => l.status === "READY_TO_SEND").length;
+
   return (
     <main className="shell">
       <section className="panel route-panel">
@@ -141,26 +147,35 @@ export default function RunDetailPage() {
           <div className="metric-box">
             <Building2 size={16} />
             <div>
-              <span>Requested</span>
+              <span>Company limit</span>
               <strong>{run.requested_companies}</strong>
             </div>
           </div>
           <div className="metric-box">
-            <Building2 size={16} />
+            <CheckCircle2 size={16} />
             <div>
-              <span>Discovered</span>
+              <span>Draft-ready</span>
+              <strong>
+                {draftReadyCount}/{run.requested_companies}
+              </strong>
+            </div>
+          </div>
+          <div className="metric-box">
+            <Users size={16} />
+            <div>
+              <span>Leads attempted</span>
               <strong>{run.discovered_companies}</strong>
             </div>
           </div>
           <div className="metric-box">
-            <Mail size={16} />
+            <User size={16} />
             <div>
-              <span>Processed</span>
+              <span>Pipeline finished</span>
               <strong>{run.processed_companies}</strong>
             </div>
           </div>
           <div className="metric-box">
-            <User size={16} />
+            <Activity size={16} />
             <div>
               <span>Status</span>
               <strong>{run.status}</strong>

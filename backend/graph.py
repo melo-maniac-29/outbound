@@ -41,9 +41,9 @@ async def crawl_step(state: GraphState):
             return {"markdown": md, "lead": lead}
         except Exception as e:
             print(f"Crawl error: {e}")
-            
+
     lead.status = LeadStatus.DEAD_LEAD
-    save_lead_to_db(lead)
+    await asyncio.to_thread(save_lead_to_db, lead)
     return {"lead": lead, "markdown": None}
 
 

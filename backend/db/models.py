@@ -183,6 +183,18 @@ def init_db():
             )
             cursor.execute("ALTER TABLE search_runs ADD COLUMN IF NOT EXISTS stop_requested BOOLEAN NOT NULL DEFAULT FALSE")
             cursor.execute("ALTER TABLE search_runs ADD COLUMN IF NOT EXISTS stopped_at TIMESTAMPTZ")
+            cursor.execute(
+                "ALTER TABLE search_runs ADD COLUMN IF NOT EXISTS ready_to_send_count INTEGER NOT NULL DEFAULT 0"
+            )
+            cursor.execute(
+                """
+                UPDATE search_runs r
+                SET ready_to_send_count = (
+                    SELECT COUNT(*)::int FROM leads l
+                    WHERE l.run_id = r.run_id AND l.status = 'READY_TO_SEND'
+                )
+                """
+            )
         conn.commit()
 
 
@@ -286,13 +298,15 @@ def update_run_counts(run_id: str):
                 SET
                     discovered_companies = COALESCE(sub.count_all, 0),
                     processed_companies = COALESCE(sub.count_processed, 0),
+                    ready_to_send_count = COALESCE(sub.count_ready, 0),
                     updated_at = NOW()
                 FROM (
                     SELECT
                         COUNT(*) AS count_all,
                         COUNT(*) FILTER (
                             WHERE status IN ('READY_TO_SEND', 'DEAD_LEAD', 'RETRY_PENDING')
-                        ) AS count_processed
+                        ) AS count_processed,
+                        COUNT(*) FILTER (WHERE status = 'READY_TO_SEND') AS count_ready
                     FROM leads
                     WHERE run_id = %s
                 ) sub
