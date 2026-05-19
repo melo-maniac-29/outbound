@@ -48,27 +48,6 @@ async def crawl_step(state: GraphState):
     return {"lead": lead, "markdown": None}
 
 
-async def extract_founder_step(state: GraphState):
-    md = state.get("markdown")
-    if md:
-        data = await extract_founder_node(md)
-        return {"ext_founder": data}
-    return {"ext_founder": {}}
-
-async def extract_services_step(state: GraphState):
-    md = state.get("markdown")
-    if md:
-        data = await extract_services_node(md)
-        return {"ext_services": data.get("services", [])}
-    return {"ext_services": []}
-
-async def extract_signals_step(state: GraphState):
-    md = state.get("markdown")
-    if md:
-        data = await extract_signals_node(md)
-        return {"ext_signals": data.get("signals", [])}
-    return {"ext_signals": []}
-
 
 async def extract_all_step(state: GraphState):
     md = state.get("markdown")
@@ -246,9 +225,6 @@ def compile_lead_graph():
 
     workflow.add_node("crawl_node", crawl_step)
     workflow.add_node("extract_all_node", extract_all_step)
-    workflow.add_node("extract_founder", extract_founder_step)
-    workflow.add_node("extract_services", extract_services_step)
-    workflow.add_node("extract_signals", extract_signals_step)
     workflow.add_node("merge_extractions", merge_extractions_step)
     workflow.add_node("linkedin_lookup_node", linkedin_lookup_step)
     workflow.add_node("dead_lead_node", dead_lead_step)

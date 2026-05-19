@@ -1,7 +1,6 @@
 pydantic>=2.0.0
 langgraph>=0.2.0
-langchain-core
-langchain-openai
+openai
 tavily-python
 crawl4ai
 requests
