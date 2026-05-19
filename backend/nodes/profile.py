@@ -1,82 +1,61 @@
 import json
 import os
+import re
+from openai import OpenAI
 from typing import Any
-
-from pydantic import BaseModel, Field
 
 
 def _model_name() -> str:
     return os.getenv("OPENAI_MODEL_NAME", "gpt-4o")
 
 
-def get_llm():
-    from langchain_openai import ChatOpenAI
-
-    return ChatOpenAI(
+def _get_client() -> OpenAI:
+    return OpenAI(
         api_key=os.getenv("OPENAI_API_KEY", "dummy"),
-        model=_model_name(),
         base_url=os.getenv("OPENAI_API_BASE"),
-        temperature=0,
     )
 
 
-def _to_payload(result, defaults: dict[str, Any]) -> dict[str, Any]:
-    if result is None:
-        return defaults
-    if isinstance(result, dict):
-        return {**defaults, **result}
-    if hasattr(result, "model_dump"):
-        return {**defaults, **result.model_dump()}
-    if hasattr(result, "dict"):
-        return {**defaults, **result.dict()}
-    return defaults
-
-
-class CompanyProfile(BaseModel):
-    summary: str | None = Field(description="Short plain-English company summary")
-    positioning: str | None = Field(description="How the company positions itself in the market")
-    audience: str | None = Field(description="Who the company appears to serve")
-    key_services: list[str] = Field(default_factory=list, description="Main services or offerings")
-    credibility_signals: list[str] = Field(default_factory=list, description="Signals that can support outreach personalization")
-    outreach_angle: str | None = Field(description="The best outreach angle based on the available evidence")
+def _parse_json(content: str) -> dict:
+    """Parse JSON from LLM output, handling markdown code fences."""
+    content = re.sub(r"```(?:json)?\s*", "", content).strip(" `")
+    try:
+        return json.loads(content)
+    except Exception:
+        match = re.search(r"\{.*\}", content, re.DOTALL)
+        if match:
+            try:
+                return json.loads(match.group(0))
+            except Exception:
+                pass
+    return {}
 
 
 def _fallback_profile(
     company_name: str | None,
     domain: str | None,
     founder_name: str | None,
-    founder_linkedin: str | None,
     services: list[str] | None,
     signals: list[str] | None,
 ) -> dict[str, Any]:
     company_label = company_name or domain or "the company"
-
-    # Build a real summary from available data
-    summary_parts = [f"{company_label}"]
+    parts = [company_label]
     if services:
-        summary_parts.append(f"offers {', '.join(services[:3])}")
+        parts.append(f"offers {', '.join(services[:3])}")
     if founder_name:
-        summary_parts.append(f"led by {founder_name}")
-    summary = " — ".join(summary_parts) + "." if len(summary_parts) > 1 else f"{company_label}."
+        parts.append(f"led by {founder_name}")
+    summary = " — ".join(parts) + "."
 
-    # Build a useful outreach angle from signals
     outreach_angle = None
     if signals:
         outreach_angle = signals[0]
     elif services:
-        outreach_angle = f"Their focus on {services[0]} suggests a fit for signal-based outreach tooling."
-    else:
-        outreach_angle = f"Reach out with a concise note about how you can help {company_label}."
-
-    # Infer audience from services if possible
-    audience = None
-    if services:
-        audience = f"Companies needing {services[0].lower()}"
+        outreach_angle = f"Their focus on {services[0]} is a strong entry point for outreach."
 
     return {
         "summary": summary,
-        "positioning": f"{company_label} operates in a specialized niche based on their public site content.",
-        "audience": audience,
+        "positioning": f"{company_label} serves a specialized niche.",
+        "audience": f"Companies needing {services[0].lower()}" if services else None,
         "key_services": (services or [])[:5],
         "credibility_signals": (signals or [])[:5],
         "outreach_angle": outreach_angle,
@@ -93,39 +72,39 @@ async def build_profile_node(
     signals: list[str] | None = None,
     email: str | None = None,
 ) -> dict[str, Any]:
-    """
-    Build a concise company profile from the crawled site and extracted facts.
-    """
+    """Build a company profile using direct OpenAI client + JSON output."""
     api_key = os.getenv("OPENAI_API_KEY")
     if not api_key or api_key == "dummy":
-        return _fallback_profile(company_name, domain, founder_name, founder_linkedin, services, signals)
+        return _fallback_profile(company_name, domain, founder_name, services, signals)
 
-    llm = get_llm().with_structured_output(CompanyProfile, method="function_calling")
+    client = _get_client()
     prompt = (
-        "You are synthesizing a B2B company profile for cold outreach preparation.\n\n"
-        "INSTRUCTIONS:\n"
-        "- Use ONLY evidence present in the input. Do not speculate.\n"
-        "- Write the summary as a clear, plain-English description of what the company does.\n"
-        "- The outreach_angle should be a specific, actionable suggestion for the first email hook.\n"
-        "  It should reference a real signal, achievement, or service — NOT a generic placeholder.\n"
-        "- If evidence is thin, be honest. A short factual profile is better than a fabricated one.\n"
-        "- The audience field should describe WHO the company serves.\n\n"
-        f"Company name: {company_name or 'Unknown'}\n"
+        "Synthesize a B2B company profile for cold outreach. Use ONLY evidence from the input.\n\n"
+        "Return ONLY valid JSON (no markdown, no extra text) in this exact format:\n"
+        '{"summary": "...", "positioning": "...", "audience": "...", '
+        '"key_services": ["svc1","svc2"], "credibility_signals": ["sig1","sig2"], "outreach_angle": "..."}\n\n'
+        "Rules for outreach_angle: must be specific and actionable, referencing a real signal, "
+        "service, or client type from the site. Never write 'Reach out with a concise note'.\n\n"
+        f"Company: {company_name or 'Unknown'}\n"
         f"Domain: {domain or 'Unknown'}\n"
         f"Founder: {founder_name or 'Unknown'}\n"
-        f"Founder LinkedIn: {founder_linkedin or 'Not found'}\n"
-        f"Email: {email or 'Not found'}\n"
-        f"Extracted services: {json.dumps(services or [])}\n"
-        f"Extracted signals: {json.dumps(signals or [])}\n\n"
-        "CRAWLED SITE CONTENT:\n"
-        f"{markdown_content[:22000]}"
+        f"Services extracted: {json.dumps(services or [])}\n"
+        f"Signals extracted: {json.dumps(signals or [])}\n\n"
+        "SITE CONTENT:\n"
+        f"{markdown_content[:18000]}"
     )
     try:
-        res = await llm.ainvoke(prompt)
-        return _to_payload(
-            res,
-            _fallback_profile(company_name, domain, founder_name, founder_linkedin, services, signals),
+        resp = client.chat.completions.create(
+            model=_model_name(),
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0,
+            max_tokens=800,
         )
+        raw = resp.choices[0].message.content.strip()
+        parsed = _parse_json(raw)
+        print(f"[PROFILE] angle={str(parsed.get('outreach_angle', ''))[:80]}")
+        fallback = _fallback_profile(company_name, domain, founder_name, services, signals)
+        return {**fallback, **{k: v for k, v in parsed.items() if v}}
     except Exception as exc:
-        print(f"Profile build failed: {exc}")
-        return _fallback_profile(company_name, domain, founder_name, founder_linkedin, services, signals)
+        print(f"[PROFILE] build failed: {exc}")
+        return _fallback_profile(company_name, domain, founder_name, services, signals)

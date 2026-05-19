@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ArrowRight, RefreshCw, Search } from "lucide-react";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
@@ -23,17 +23,52 @@ export default function DashboardPage() {
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const refresh = async () => {
+  // Guards: prevent overlapping requests
+  const inFlight = useRef(false);
+  const abortRef = useRef<AbortController | null>(null);
+
+  const refresh = async (signal?: AbortSignal) => {
+    if (inFlight.current) return;          // skip if already fetching
+    inFlight.current = true;
     setIsRefreshing(true);
     try {
-      const [sRes, rRes] = await Promise.all([fetch(`${API_URL}/api/summary`), fetch(`${API_URL}/api/runs?limit=5`)]);
+      const [sRes, rRes] = await Promise.all([
+        fetch(`${API_URL}/api/summary`, { signal }),
+        fetch(`${API_URL}/api/runs?limit=5`, { signal }),
+      ]);
       if (sRes.ok) setSummary(await sRes.json());
       if (rRes.ok) { const d = await rRes.json(); setRuns(d.runs ?? []); }
       setError(null);
-    } catch { setError("Backend unreachable."); } finally { setIsRefreshing(false); }
+    } catch (e) {
+      if (e instanceof Error && e.name === "AbortError") return;
+      setError("Backend unreachable.");
+    } finally {
+      inFlight.current = false;
+      setIsRefreshing(false);
+    }
   };
 
-  useEffect(() => { void refresh(); const id = setInterval(refresh, 3500); return () => clearInterval(id); }, []);
+  useEffect(() => {
+    const ac = new AbortController();
+    abortRef.current = ac;
+
+    void refresh(ac.signal);
+
+    // Poll every 5s — slower when idle; faster (3s) when a run is active
+    let pollMs = 5000;
+    const schedule = () => {
+      const hasActive = runs.some(r => r.status === "RUNNING");
+      pollMs = hasActive ? 3000 : 6000;
+      return setTimeout(() => { void refresh(ac.signal); schedule(); }, pollMs);
+    };
+    const id = schedule();
+
+    return () => {
+      ac.abort();
+      clearTimeout(id);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -46,9 +81,13 @@ export default function DashboardPage() {
       const body = isDomain ? { domain: t, label: t } : { query: t, max_companies: maxCompanies };
       const res = await fetch(`${API_URL}${ep}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
       if (!res.ok) throw new Error();
-      setQuery(""); await refresh();
+      setQuery("");
+      inFlight.current = false; // force next poll to run immediately
+      await refresh();
     } catch { setError("Failed to start run."); } finally { setIsSearching(false); }
   };
+
+  const hasActiveRun = runs.some(r => r.status === "RUNNING");
 
   return (
     <main className="shell">
@@ -56,6 +95,12 @@ export default function DashboardPage() {
         <p className="eyebrow">Dashboard</p>
         <h1>Dispatch Center</h1>
         <p>Start discovery runs and monitor pipeline progress.</p>
+        {hasActiveRun && (
+          <div style={{ marginTop: 12, display: "flex", alignItems: "center", gap: 8, fontSize: "0.82rem", color: "var(--teal)" }}>
+            <RefreshCw size={13} className="animate-spin" />
+            Pipeline running — auto-refreshing
+          </div>
+        )}
       </div>
 
       <div className="stats-row">
