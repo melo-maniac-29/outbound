@@ -2,9 +2,11 @@
 
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
-import { RefreshCw } from "lucide-react";
+import { RefreshCw, Wifi, WifiOff } from "lucide-react";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+const CACHE_KEY = "outbound_leads_cache";
+
 type Lead = { lead_id: string; company_name: string | null; domain: string | null; search_query: string; status: string; email: string | null; founder_name: string | null; };
 
 function statusBadge(s: string) {
@@ -15,8 +17,10 @@ function statusBadge(s: string) {
 export default function LeadsPage() {
   const [leads, setLeads] = useState<Lead[]>([]);
   const [loading, setLoading] = useState(true);
+  const [connected, setConnected] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+  const esRef = useRef<EventSource | null>(null);
 
   const load = async () => {
     abortRef.current?.abort();
@@ -27,19 +31,50 @@ export default function LeadsPage() {
       const res = await fetch(`${API_URL}/api/leads?limit=100`, { signal: ac.signal });
       if (!res.ok) throw new Error();
       const d = await res.json();
-      setLeads(d.leads ?? []); setError(null);
+      const data = d.leads ?? [];
+      setLeads(data);
+      setError(null);
+      // Save to localStorage so next visit is instant
+      try { localStorage.setItem(CACHE_KEY, JSON.stringify(data)); } catch {}
     } catch (e) {
       if (e instanceof Error && e.name === "AbortError") return;
       setError("Failed to fetch leads.");
     } finally { setLoading(false); }
   };
 
+  // Mount: load cache instantly, then fetch fresh
   useEffect(() => {
+    try {
+      const cached = localStorage.getItem(CACHE_KEY);
+      if (cached) { setLeads(JSON.parse(cached)); setLoading(false); }
+    } catch {}
     void load();
     return () => abortRef.current?.abort();
   }, []);
 
+  // SSE: re-fetch only when pipeline state actually changes
+  useEffect(() => {
+    let retryTimer: ReturnType<typeof setTimeout>;
+
+    const connect = () => {
+      esRef.current?.close();
+      const es = new EventSource(`${API_URL}/api/stream/summary`);
+      esRef.current = es;
+      es.onopen = () => setConnected(true);
+      es.onmessage = () => void load();
+      es.onerror = () => {
+        setConnected(false);
+        es.close();
+        retryTimer = setTimeout(connect, 5000);
+      };
+    };
+
+    connect();
+    return () => { clearTimeout(retryTimer); esRef.current?.close(); };
+  }, []);
+
   const readyCount = leads.filter(l => l.status === "READY_TO_SEND").length;
+  const activeCount = leads.filter(l => !["READY_TO_SEND", "DEAD_LEAD", "SENT"].includes(l.status)).length;
 
   return (
     <main className="shell">
@@ -48,12 +83,15 @@ export default function LeadsPage() {
         <h1>Lead Directory</h1>
         <p>Every company discovered and processed by the pipeline.</p>
         <div className="meta-row" style={{ marginTop: 12 }}>
-          {readyCount > 0 && (
-            <span className="badge badge-ready">{readyCount} ready to send</span>
-          )}
+          {readyCount > 0 && <span className="badge badge-ready">{readyCount} ready to send</span>}
           <button className="btn btn-ghost" onClick={load} disabled={loading}>
             <RefreshCw size={14} className={loading ? "animate-spin" : ""} /> Refresh
           </button>
+          <span style={{ fontSize: "0.78rem", display: "flex", alignItems: "center", gap: 5, color: connected ? "var(--teal)" : "var(--muted)" }}>
+            {connected
+              ? <><Wifi size={12} /> Live{activeCount > 0 && <RefreshCw size={11} className="animate-spin" style={{ marginLeft: 4 }} />}</>
+              : <><WifiOff size={12} /> Reconnecting…</>}
+          </span>
         </div>
       </div>
 

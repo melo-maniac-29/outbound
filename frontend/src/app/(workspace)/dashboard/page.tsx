@@ -5,6 +5,8 @@ import { useEffect, useRef, useState } from "react";
 import { ArrowRight, RefreshCw, Search, Wifi, WifiOff } from "lucide-react";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+const CACHE_SUMMARY = "outbound_summary_cache";
+const CACHE_RUNS = "outbound_runs_cache";
 
 type RunSummary = { run_id: string; query: string; requested_companies: number; discovered_companies: number; processed_companies: number; ready_to_send_count?: number; source_type: string; status: string; };
 type Summary = { total_leads: number; active_leads: number; ready_to_send: number; dead_leads: number; total_runs: number; };
@@ -27,10 +29,16 @@ export default function DashboardPage() {
   useEffect(() => {
     let retryTimer: ReturnType<typeof setTimeout>;
 
-    const connect = () => {
-      // Close any existing connection
-      esRef.current?.close();
+    // Restore from cache instantly
+    try {
+      const cs = localStorage.getItem(CACHE_SUMMARY);
+      const cr = localStorage.getItem(CACHE_RUNS);
+      if (cs) setSummary(JSON.parse(cs));
+      if (cr) setRuns(JSON.parse(cr));
+    } catch {}
 
+    const connect = () => {
+      esRef.current?.close();
       const es = new EventSource(`${API_URL}/api/stream/summary`);
       esRef.current = es;
 
@@ -39,15 +47,20 @@ export default function DashboardPage() {
       es.onmessage = (evt) => {
         try {
           const data = JSON.parse(evt.data);
-          if (data.summary) setSummary(data.summary);
-          if (Array.isArray(data.runs)) setRuns(data.runs);
+          if (data.summary) {
+            setSummary(data.summary);
+            try { localStorage.setItem(CACHE_SUMMARY, JSON.stringify(data.summary)); } catch {}
+          }
+          if (Array.isArray(data.runs)) {
+            setRuns(data.runs);
+            try { localStorage.setItem(CACHE_RUNS, JSON.stringify(data.runs)); } catch {}
+          }
         } catch { /* ignore malformed */ }
       };
 
       es.onerror = () => {
         setConnected(false);
         es.close();
-        // Reconnect after 5 seconds
         retryTimer = setTimeout(connect, 5000);
       };
     };

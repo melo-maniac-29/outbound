@@ -2,9 +2,11 @@
 
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
-import { ArrowRight, RefreshCw } from "lucide-react";
+import { ArrowRight, RefreshCw, Wifi, WifiOff } from "lucide-react";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+const CACHE_KEY = "outbound_runs_cache";
+
 type Run = { run_id: string; query: string; requested_companies: number; discovered_companies: number; processed_companies: number; ready_to_send_count?: number; source_type: string; status: string; };
 
 function statusBadge(s: string) {
@@ -15,8 +17,10 @@ function statusBadge(s: string) {
 export default function RunsPage() {
   const [runs, setRuns] = useState<Run[]>([]);
   const [loading, setLoading] = useState(true);
+  const [connected, setConnected] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+  const esRef = useRef<EventSource | null>(null);
 
   const load = async () => {
     abortRef.current?.abort();
@@ -27,17 +31,49 @@ export default function RunsPage() {
       const res = await fetch(`${API_URL}/api/runs?limit=50`, { signal: ac.signal });
       if (!res.ok) throw new Error();
       const d = await res.json();
-      setRuns(d.runs ?? []); setError(null);
+      const data = d.runs ?? [];
+      setRuns(data);
+      setError(null);
+      // Save to localStorage so next visit is instant
+      try { localStorage.setItem(CACHE_KEY, JSON.stringify(data)); } catch {}
     } catch (e) {
       if (e instanceof Error && e.name === "AbortError") return;
       setError("Failed to fetch runs.");
     } finally { setLoading(false); }
   };
 
+  // Mount: load cache instantly, then fetch fresh
   useEffect(() => {
+    try {
+      const cached = localStorage.getItem(CACHE_KEY);
+      if (cached) { setRuns(JSON.parse(cached)); setLoading(false); }
+    } catch {}
     void load();
     return () => abortRef.current?.abort();
   }, []);
+
+  // SSE: re-fetch only when pipeline state actually changes
+  useEffect(() => {
+    let retryTimer: ReturnType<typeof setTimeout>;
+
+    const connect = () => {
+      esRef.current?.close();
+      const es = new EventSource(`${API_URL}/api/stream/summary`);
+      esRef.current = es;
+      es.onopen = () => setConnected(true);
+      es.onmessage = () => void load();
+      es.onerror = () => {
+        setConnected(false);
+        es.close();
+        retryTimer = setTimeout(connect, 5000);
+      };
+    };
+
+    connect();
+    return () => { clearTimeout(retryTimer); esRef.current?.close(); };
+  }, []);
+
+  const hasActiveRun = runs.some(r => r.status === "RUNNING");
 
   return (
     <main className="shell">
@@ -49,9 +85,12 @@ export default function RunsPage() {
           <button className="btn btn-ghost" onClick={load} disabled={loading}>
             <RefreshCw size={14} className={loading ? "animate-spin" : ""} /> Refresh
           </button>
-          <Link href="/dashboard" className="btn-link">
-            New run <ArrowRight size={13} />
-          </Link>
+          <Link href="/dashboard" className="btn-link">New run <ArrowRight size={13} /></Link>
+          <span style={{ fontSize: "0.78rem", display: "flex", alignItems: "center", gap: 5, color: connected ? "var(--teal)" : "var(--muted)" }}>
+            {connected
+              ? <><Wifi size={12} /> Live{hasActiveRun && <RefreshCw size={11} className="animate-spin" style={{ marginLeft: 4 }} />}</>
+              : <><WifiOff size={12} /> Reconnecting…</>}
+          </span>
         </div>
       </div>
 

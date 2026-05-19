@@ -100,7 +100,8 @@ async def process_lead(query: str, max_companies: int, run_id: str):
 
                 remaining = max_companies - good_count
                 slot_budget = max(0, remaining)
-                results = search_node(
+                results = await asyncio.to_thread(
+                    search_node,
                     bucket_query,
                     max_companies=min(max(remaining * 4, 10), search_target),
                     max_attempts=variant_limit,
