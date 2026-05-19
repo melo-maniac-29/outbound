@@ -89,28 +89,44 @@ async def extract_founder_node(markdown_content: str) -> dict:
 
 
 async def extract_services_node(markdown_content: str) -> dict:
-    """Extract company services with structured output."""
+    """Extract company services — aggressive extraction, never returns empty if site has content."""
     llm = get_llm().with_structured_output(ServicesExtraction, method="function_calling")
-    prompt = f"Extract a concise list of services provided by the company from the following markdown.\n\n{markdown_content[:22000]}"
+    prompt = (
+        "You are extracting services from a B2B company website. Be aggressive — find EVERYTHING.\n"
+        "Look for: page headings, nav links, URL paths like /services/X, bullet lists, pricing tiers, "
+        "any phrases describing what they do or offer.\n"
+        "Even if the content is sparse, infer services from the company type and any clues present.\n"
+        "Return at least 2-5 services. Never return an empty list if there is ANY content.\n\n"
+        f"{markdown_content[:22000]}"
+    )
     try:
         res = await llm.ainvoke(prompt)
-        return _to_payload(res, {"services": []})
+        result = _to_payload(res, {"services": []})
+        print(f"[EXTRACT] services={result.get('services', [])}")
+        return result
     except Exception as e:
         print(f"Services extraction failed: {e}")
         return {"services": []}
 
 
 async def extract_signals_node(markdown_content: str) -> dict:
-    """Extract recent signals and news with structured output."""
+    """Extract outreach signals — aggressive extraction from any available clues."""
     llm = get_llm().with_structured_output(SignalsExtraction, method="function_calling")
     prompt = (
-        "Extract recent signals, news, client wins, case studies, launches, or hiring indicators "
-        "that could support outreach personalization.\n\n"
+        "You are extracting personalization signals from a B2B company website for cold outreach.\n"
+        "Look hard for: client logos, testimonials, case study titles, blog post topics, recent hires, "
+        "awards, certifications, tool integrations mentioned, specific industries they serve, "
+        "notable clients, before/after results, revenue claims, growth indicators.\n"
+        "If no explicit signals exist, create implied signals from: the company's focus area, "
+        "the types of clients they serve, or the specific problems they solve.\n"
+        "Return 3-6 signals. Each signal should be 1-2 sentences that could be used to personalize an email.\n\n"
         f"{markdown_content[:22000]}"
     )
     try:
         res = await llm.ainvoke(prompt)
-        return _to_payload(res, {"signals": []})
+        result = _to_payload(res, {"signals": []})
+        print(f"[EXTRACT] signals={result.get('signals', [])}")
+        return result
     except Exception as e:
         print(f"Signals extraction failed: {e}")
         return {"signals": []}

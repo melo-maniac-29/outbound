@@ -116,7 +116,7 @@ def draft_node(founder_name: str, company: str, signal: str, company_profile: di
 
 TARGET PERSON: {founder_name or "Founder"}
 COMPANY: {company or "their company"}
-PERSONALIZATION SIGNAL: {signal or "their recent updates"}
+PERSONALIZATION SIGNAL: {signal or "their positioning in the market"}
 
 COMPANY BRIEF:
 {profile_brief}
@@ -125,23 +125,25 @@ PRODUCT WE ARE OFFERING: {product}
 SENDER NAME: {sender}
 
 RULES:
-- Each email must be under 100 words
-- No generic openings like "Hope this finds you well"
-- Peer-to-peer tone, direct and confident
-- Email 1 MUST reference the specific signal above
-- Email 2 should add a new angle or insight
-- Email 3 is a short closing-the-loop message
-- Use the company brief to make emails specific, not generic
+- Each email must be 60-100 words (not shorter, not longer)
+- Write the FULL email body: greeting line, 2-3 sentences of body, closing question, sender sign-off
+- No generic openings like "Hope this finds you well" or "I came across your company"
+- Peer-to-peer tone — write like you already know the industry
+- Email 1: Lead with the personalization signal
+- Email 2: New angle — add a different value insight
+- Email 3: Short closing-the-loop message
+- Use specific details from the company brief, not vague generalities
+- Always end with a soft CTA question (not "Let me know if you're interested")
 
-Return in EXACTLY this format:
+Return in EXACTLY this format with no extra text before EMAIL_1:
 EMAIL_1:
-<body>
+<full email body>
 
 EMAIL_2:
-<body>
+<full email body>
 
 EMAIL_3:
-<body>"""
+<full email body>"""
 
     try:
         response = client.chat.completions.create(
@@ -151,8 +153,10 @@ EMAIL_3:
                 {"role": "user", "content": user_prompt}
             ],
             temperature=0.7,
+            max_tokens=1200,
         )
         content = response.choices[0].message.content.strip()
+        print(f"[DRAFT] raw output ({len(content)} chars): {content[:300]}...")
 
         # More robust parsing — handle variations in LLM output format
         parts = re.split(r"EMAIL_[123]\s*:", content)
