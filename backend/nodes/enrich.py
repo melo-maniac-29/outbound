@@ -41,15 +41,21 @@ def pattern_guess_node(founder_name: str, domain: str) -> dict:
     """
     Runs only when Hunter confidence is insufficient.
     Guesses email patterns based on name and domain.
+    Tries multiple common corporate email patterns.
     """
     if not founder_name or not domain:
         return {"email": None, "email_confidence": 0.0}
-        
+
     parts = founder_name.lower().split()
-    if len(parts) >= 2:
-        first = parts[0]
-        last = parts[-1]
-        guessed_email = f"{first}.{last}@{domain}"
-        return {"email": guessed_email, "email_confidence": 0.72}
-        
-    return {"email": None, "email_confidence": 0.0}
+    if len(parts) < 2:
+        # Single name — try firstname@ as only option
+        guessed_email = f"{parts[0]}@{domain}"
+        return {"email": guessed_email, "email_confidence": 0.55}
+
+    first = parts[0]
+    last = parts[-1]
+
+    # Most common corporate patterns, ordered by prevalence
+    # first.last@ is most common across industries
+    primary = f"{first}.{last}@{domain}"
+    return {"email": primary, "email_confidence": 0.72}

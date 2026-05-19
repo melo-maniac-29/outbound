@@ -272,6 +272,7 @@ async def run_workflow_for_lead(workflow, initial_lead):
                     "markdown": None,
                     "personalization_hook": None,
                     "company_profile": None,
+                    "ext_emails": None,
                 }
             )
             initial_lead = lead_snapshot

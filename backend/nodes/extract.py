@@ -114,3 +114,49 @@ async def extract_signals_node(markdown_content: str) -> dict:
     except Exception as e:
         print(f"Signals extraction failed: {e}")
         return {"signals": []}
+
+
+def extract_emails_from_content(markdown_content: str) -> list[dict]:
+    """
+    Extract email addresses directly from crawled website content.
+    This is a free alternative to Hunter.io — emails found on the company's
+    own website are high-confidence since the company published them.
+    """
+    email_pattern = r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}'
+    found = re.findall(email_pattern, markdown_content)
+
+    # Generic role-based emails are useless for cold outreach to a founder
+    blocked_prefixes = {
+        'info@', 'support@', 'hello@', 'contact@', 'admin@', 'sales@',
+        'help@', 'noreply@', 'no-reply@', 'team@', 'press@', 'media@',
+        'privacy@', 'legal@', 'billing@', 'careers@', 'jobs@', 'hr@',
+        'webmaster@', 'postmaster@', 'abuse@', 'newsletter@', 'office@',
+        'general@', 'enquiries@', 'feedback@', 'marketing@',
+    }
+
+    results = []
+    seen: set[str] = set()
+    for email in found:
+        normalized = email.lower().strip()
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+
+        if any(normalized.startswith(prefix) for prefix in blocked_prefixes):
+            continue
+
+        # Skip file-like references that regex might catch
+        if normalized.endswith(('.png', '.jpg', '.gif', '.svg', '.webp', '.css', '.js')):
+            continue
+
+        # Skip example/placeholder emails
+        if 'example.com' in normalized or 'test.' in normalized or 'placeholder' in normalized:
+            continue
+
+        results.append({
+            'email': normalized,
+            'confidence': 0.85,
+            'source': 'website_content',
+        })
+
+    return results

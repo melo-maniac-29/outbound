@@ -6,7 +6,7 @@ from state import LeadState, LeadStatus
 from db.models import save_lead_to_db
 
 from nodes.crawl import crawl_node
-from nodes.extract import extract_founder_node, extract_services_node, extract_signals_node
+from nodes.extract import extract_founder_node, extract_services_node, extract_signals_node, extract_emails_from_content
 from nodes.linkedin_lookup import linkedin_lookup_node
 from nodes.profile import build_profile_node
 from nodes.enrich import enrich_node, pattern_guess_node
@@ -26,6 +26,7 @@ class GraphState(TypedDict):
     ext_founder: Optional[dict]
     ext_services: Optional[list]
     ext_signals: Optional[list]
+    ext_emails: Optional[list]
 
 async def crawl_step(state: GraphState):
     lead = state["lead"]
@@ -72,7 +73,10 @@ async def extract_signals_step(state: GraphState):
 async def extract_all_step(state: GraphState):
     md = state.get("markdown")
     if not md:
-        return {"ext_founder": {}, "ext_services": [], "ext_signals": []}
+        return {"ext_founder": {}, "ext_services": [], "ext_signals": [], "ext_emails": []}
+
+    # Email extraction is pure regex — runs instantly, no async needed
+    crawled_emails = extract_emails_from_content(md)
 
     founder_data, services_data, signals_data = await asyncio.gather(
         extract_founder_node(md),
@@ -83,6 +87,7 @@ async def extract_all_step(state: GraphState):
         "ext_founder": founder_data or {},
         "ext_services": (services_data or {}).get("services", []),
         "ext_signals": (signals_data or {}).get("signals", []),
+        "ext_emails": crawled_emails,
     }
 
 
@@ -97,6 +102,13 @@ def merge_extractions_step(state: GraphState):
     lead.services = state.get("ext_services", [])
     lead.signals = state.get("ext_signals", [])
     lead.extraction_timestamp = datetime.now(timezone.utc)
+
+    # Use emails found directly on the company website (free, no API)
+    crawled_emails = state.get("ext_emails", [])
+    if crawled_emails:
+        best = max(crawled_emails, key=lambda e: e.get("confidence", 0))
+        lead.email = best["email"]
+        lead.email_confidence = best["confidence"]
 
     lead.status = LeadStatus.EXTRACTED
     save_lead_to_db(lead)
@@ -122,9 +134,18 @@ def dead_lead_step(state: GraphState):
 
 def enrich_step(state: GraphState):
     lead = state["lead"]
+    # Skip Hunter.io if we already found a good email from the crawled content
+    if lead.email and lead.email_confidence >= 0.80:
+        lead.status = LeadStatus.ENRICHED
+        save_lead_to_db(lead)
+        return {"lead": lead}
     data = enrich_node(lead.domain)
-    lead.email = data.get("email")
-    lead.email_confidence = data.get("email_confidence", 0.0)
+    hunter_email = data.get("email")
+    hunter_conf = data.get("email_confidence", 0.0)
+    # Only replace if Hunter found something better
+    if hunter_email and hunter_conf > lead.email_confidence:
+        lead.email = hunter_email
+        lead.email_confidence = hunter_conf
     lead.status = LeadStatus.ENRICHED
     save_lead_to_db(lead)
     return {"lead": lead}

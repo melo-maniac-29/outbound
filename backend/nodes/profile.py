@@ -50,23 +50,36 @@ def _fallback_profile(
     signals: list[str] | None,
 ) -> dict[str, Any]:
     company_label = company_name or domain or "the company"
-    summary_bits = [f"{company_label}."]
+
+    # Build a real summary from available data
+    summary_parts = [f"{company_label}"]
     if services:
-        summary_bits.append(f"Services: {', '.join(services[:4])}.")
-    if signals:
-        summary_bits.append(f"Signals: {signals[0]}.")
+        summary_parts.append(f"offers {', '.join(services[:3])}")
     if founder_name:
-        summary_bits.append(f"Founder: {founder_name}.")
-    if founder_linkedin:
-        summary_bits.append("Founder LinkedIn confirmed.")
+        summary_parts.append(f"led by {founder_name}")
+    summary = " — ".join(summary_parts) + "." if len(summary_parts) > 1 else f"{company_label}."
+
+    # Build a useful outreach angle from signals
+    outreach_angle = None
+    if signals:
+        outreach_angle = signals[0]
+    elif services:
+        outreach_angle = f"Their focus on {services[0]} suggests a fit for signal-based outreach tooling."
+    else:
+        outreach_angle = f"Reach out with a concise note about how you can help {company_label}."
+
+    # Infer audience from services if possible
+    audience = None
+    if services:
+        audience = f"Companies needing {services[0].lower()}"
 
     return {
-        "summary": " ".join(summary_bits).strip(),
-        "positioning": f"{company_label} appears to be positioning itself through its public site content.",
-        "audience": None,
+        "summary": summary,
+        "positioning": f"{company_label} operates in a specialized niche based on their public site content.",
+        "audience": audience,
         "key_services": (services or [])[:5],
         "credibility_signals": (signals or [])[:5],
-        "outreach_angle": signals[0] if signals else f"Lead with a concise note about {company_label}.",
+        "outreach_angle": outreach_angle,
     }
 
 
@@ -89,16 +102,22 @@ async def build_profile_node(
 
     llm = get_llm().with_structured_output(CompanyProfile, method="function_calling")
     prompt = (
-        "Synthesize a concise B2B company profile from the provided site content and extracted facts.\n"
-        "Use only the evidence in the input. Avoid speculation.\n"
-        "Return a practical profile that can be used to draft a relevant cold email.\n\n"
-        f"Company name: {company_name or ''}\n"
-        f"Domain: {domain or ''}\n"
-        f"Founder: {founder_name or ''}\n"
-        f"Founder LinkedIn: {founder_linkedin or ''}\n"
-        f"Email: {email or ''}\n"
-        f"Services: {json.dumps(services or [])}\n"
-        f"Signals: {json.dumps(signals or [])}\n\n"
+        "You are synthesizing a B2B company profile for cold outreach preparation.\n\n"
+        "INSTRUCTIONS:\n"
+        "- Use ONLY evidence present in the input. Do not speculate.\n"
+        "- Write the summary as a clear, plain-English description of what the company does.\n"
+        "- The outreach_angle should be a specific, actionable suggestion for the first email hook.\n"
+        "  It should reference a real signal, achievement, or service — NOT a generic placeholder.\n"
+        "- If evidence is thin, be honest. A short factual profile is better than a fabricated one.\n"
+        "- The audience field should describe WHO the company serves.\n\n"
+        f"Company name: {company_name or 'Unknown'}\n"
+        f"Domain: {domain or 'Unknown'}\n"
+        f"Founder: {founder_name or 'Unknown'}\n"
+        f"Founder LinkedIn: {founder_linkedin or 'Not found'}\n"
+        f"Email: {email or 'Not found'}\n"
+        f"Extracted services: {json.dumps(services or [])}\n"
+        f"Extracted signals: {json.dumps(signals or [])}\n\n"
+        "CRAWLED SITE CONTENT:\n"
         f"{markdown_content[:22000]}"
     )
     try:
