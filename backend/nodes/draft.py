@@ -6,6 +6,18 @@ from state import LeadStatus
 from db.models import get_setting
 
 
+DEFAULT_SYSTEM_PROMPT = (
+    "You are an expert sales representative writing cold outreach emails.\n"
+    "Your goal is to write a concise, peer-to-peer cold email based on the company brief and signals provided.\n\n"
+    "Constraints:\n"
+    "- Under 100 words per email.\n"
+    "- No generic openings like 'Hope this finds you well' or 'I came across your company'.\n"
+    "- Tone: Peer-to-peer, confident, direct — like messaging a colleague, not pitching a stranger.\n"
+    "- Must reference the specific signal or company insight provided.\n"
+    "- Each email in the sequence should have a different angle, not repeat the same pitch."
+)
+
+
 def _format_profile_brief(company_profile: dict | None, company: str | None) -> str:
     """
     Convert the raw company profile dict into a natural language brief
@@ -86,10 +98,7 @@ def draft_node(founder_name: str, company: str, signal: str, company_profile: di
     Tool: GPT-4o
     Generates the 3-email sequence based on constraints.
     """
-    prompt_path = os.path.join(os.path.dirname(__file__), "../prompts/email_system.txt")
-    with open(prompt_path, "r") as f:
-        file_prompt = f.read()
-    system_prompt = get_setting("draft_system_prompt", file_prompt) or file_prompt
+    system_prompt = get_setting("draft_system_prompt", DEFAULT_SYSTEM_PROMPT) or DEFAULT_SYSTEM_PROMPT
 
     api_key = os.getenv("OPENAI_API_KEY")
     if not api_key or api_key == "dummy":
