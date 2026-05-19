@@ -1,5 +1,5 @@
 import asyncio
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional, TypedDict
 from langgraph.graph import StateGraph, START, END
 from state import LeadState, LeadStatus
@@ -96,7 +96,7 @@ def merge_extractions_step(state: GraphState):
 
     lead.services = state.get("ext_services", [])
     lead.signals = state.get("ext_signals", [])
-    lead.extraction_timestamp = datetime.utcnow()
+    lead.extraction_timestamp = datetime.now(timezone.utc)
 
     lead.status = LeadStatus.EXTRACTED
     save_lead_to_db(lead)
