@@ -2,231 +2,110 @@
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
-import { Activity, Database, RefreshCw, Search, Settings } from "lucide-react";
+import { ArrowRight, RefreshCw, Search } from "lucide-react";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
-type RunSummary = {
-  run_id: string;
-  query: string;
-  requested_companies: number;
-  discovered_companies: number;
-  processed_companies: number;
-  /** Draft-ready leads in this run (goal progress vs requested_companies). */
-  ready_to_send_count?: number;
-  source_type: string;
-  status: string;
-};
+type RunSummary = { run_id: string; query: string; requested_companies: number; discovered_companies: number; processed_companies: number; ready_to_send_count?: number; source_type: string; status: string; };
+type Summary = { total_leads: number; active_leads: number; ready_to_send: number; dead_leads: number; total_runs: number; };
 
-type Summary = {
-  total_leads: number;
-  active_leads: number;
-  ready_to_send: number;
-  dead_leads: number;
-  total_runs: number;
-};
+function statusBadge(status: string) {
+  const map: Record<string, string> = { RUNNING: "badge-running", COMPLETED: "badge-completed", EXHAUSTED: "badge-failed", STOPPED: "badge-default", FAILED: "badge-failed" };
+  return `badge ${map[status] || "badge-default"}`;
+}
 
 export default function DashboardPage() {
   const [query, setQuery] = useState("");
   const [maxCompanies, setMaxCompanies] = useState(5);
-  const [recentRuns, setRecentRuns] = useState<RunSummary[]>([]);
-  const [summary, setSummary] = useState<Summary>({
-    total_leads: 0,
-    active_leads: 0,
-    ready_to_send: 0,
-    dead_leads: 0,
-    total_runs: 0,
-  });
+  const [runs, setRuns] = useState<RunSummary[]>([]);
+  const [summary, setSummary] = useState<Summary>({ total_leads: 0, active_leads: 0, ready_to_send: 0, dead_leads: 0, total_runs: 0 });
   const [isSearching, setIsSearching] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const fetchDashboard = async () => {
+  const refresh = async () => {
     setIsRefreshing(true);
     try {
-      const res = await fetch(`${API_URL}/api/summary`);
-      if (!res.ok) throw new Error(`Summary request failed with ${res.status}`);
-      const summaryData = await res.json();
-      setSummary(summaryData);
-
-      const runsRes = await fetch(`${API_URL}/api/runs?limit=3`);
-      if (!runsRes.ok) throw new Error(`Runs request failed with ${runsRes.status}`);
-      const runsData = await runsRes.json();
-      setRecentRuns(runsData.runs ?? []);
-
+      const [sRes, rRes] = await Promise.all([fetch(`${API_URL}/api/summary`), fetch(`${API_URL}/api/runs?limit=5`)]);
+      if (sRes.ok) setSummary(await sRes.json());
+      if (rRes.ok) { const d = await rRes.json(); setRuns(d.runs ?? []); }
       setError(null);
-    } catch (err) {
-      console.error(err);
-      setError("Failed to refresh dashboard.");
-    } finally {
-      setIsRefreshing(false);
-    }
+    } catch { setError("Backend unreachable."); } finally { setIsRefreshing(false); }
   };
 
-  useEffect(() => {
-    const initialLoad = setTimeout(() => {
-      void fetchDashboard();
-    }, 0);
-    const interval = setInterval(fetchDashboard, 3500);
-    return () => {
-      clearTimeout(initialLoad);
-      clearInterval(interval);
-    };
-  }, []);
+  useEffect(() => { void refresh(); const id = setInterval(refresh, 3500); return () => clearInterval(id); }, []);
 
-  const handleSubmit = async (e: React.FormEvent) => {
+  const submit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!query.trim()) return;
     setIsSearching(true);
     try {
-      const trimmed = query.trim();
-      const isDomain = !trimmed.includes(" ") && trimmed.includes(".");
-      const endpoint = isDomain ? "/api/process-domain" : "/api/search";
-      const payload = isDomain
-        ? { domain: trimmed, label: trimmed }
-        : { query: trimmed, max_companies: maxCompanies };
-      const res = await fetch(`${API_URL}${endpoint}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
-      if (!res.ok) throw new Error(`Request failed with ${res.status}`);
-      setQuery("");
-      await fetchDashboard();
-    } catch (err) {
-      console.error(err);
-      setError("Failed to start the run.");
-    } finally {
-      setIsSearching(false);
-    }
+      const t = query.trim();
+      const isDomain = !t.includes(" ") && t.includes(".");
+      const ep = isDomain ? "/api/process-domain" : "/api/search";
+      const body = isDomain ? { domain: t, label: t } : { query: t, max_companies: maxCompanies };
+      const res = await fetch(`${API_URL}${ep}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      if (!res.ok) throw new Error();
+      setQuery(""); await refresh();
+    } catch { setError("Failed to start run."); } finally { setIsSearching(false); }
   };
 
   return (
     <main className="shell">
-      <section className="hero-panel">
-        <div className="hero-copy">
-          <p className="eyebrow">Workspace Dashboard</p>
-          <h1>Dispatch Center</h1>
-          <p className="hero-text">
-            Start new discovery runs and view high-level metrics. Navigate to Runs or Leads for detailed records.
-          </p>
+      <div className="page-header">
+        <p className="eyebrow">Dashboard</p>
+        <h1>Dispatch Center</h1>
+        <p>Start discovery runs and monitor pipeline progress.</p>
+      </div>
+
+      <div className="stats-row">
+        <div className="stat-block"><div className="stat-value">{summary.total_runs}</div><div className="stat-label">Runs</div></div>
+        <div className="stat-block"><div className="stat-value">{summary.total_leads}</div><div className="stat-label">Leads</div></div>
+        <div className="stat-block"><div className="stat-value">{summary.active_leads}</div><div className="stat-label">Processing</div></div>
+        <div className="stat-block"><div className="stat-value">{summary.ready_to_send}</div><div className="stat-label">Draft Ready</div></div>
+      </div>
+
+      <div className="section">
+        <div className="section-head">
+          <h2 className="section-title">New Run</h2>
         </div>
-        <div className="hero-meta">
-          <div className="status-chip">
-            {isRefreshing ? <RefreshCw size={14} className="animate-spin" /> : <Activity size={14} />}
-            Live sync
+        <form onSubmit={submit} style={{ maxWidth: 560 }}>
+          <div className="form-group" style={{ marginBottom: 14 }}>
+            <label className="form-label">Query or direct domain</label>
+            <input className="form-input" value={query} onChange={e => setQuery(e.target.value)} placeholder="boutique lifecycle marketing agency founder" />
           </div>
-          <div className="hero-links">
-            <Link className="utility-link" href="/settings">
-              <Settings size={16} />
-              Prompt Settings
+          <div className="form-row">
+            <div className="form-group" style={{ width: 140 }}>
+              <label className="form-label">Target count</label>
+              <input className="form-input" type="number" min={1} max={25} value={maxCompanies} onChange={e => setMaxCompanies(Number(e.target.value) || 1)} />
+            </div>
+            <button className="btn btn-primary" type="submit" disabled={isSearching}>
+              {isSearching ? <RefreshCw size={16} className="animate-spin" /> : <Search size={16} />} Start Run
+            </button>
+          </div>
+          <p className="form-hint" style={{ marginTop: 10 }}>Multi-wave search continues until this many leads reach draft-ready.</p>
+        </form>
+        {error && <div className="callout callout-error">{error}</div>}
+      </div>
+
+      <div className="section">
+        <div className="section-head">
+          <h2 className="section-title">Recent Runs</h2>
+          <Link href="/runs" className="btn-link">View all <ArrowRight size={14} /></Link>
+        </div>
+        <div className="data-list">
+          {runs.map(run => (
+            <Link key={run.run_id} href={`/runs/${run.run_id}`} className="data-row">
+              <span className="primary">{run.query}</span>
+              <span className="mono">{run.ready_to_send_count ?? 0}/{run.requested_companies} ready</span>
+              <span className="secondary">{run.discovered_companies} attempted</span>
+              <span className="secondary">{run.processed_companies} finished</span>
+              <span className={statusBadge(run.status)}>{run.status}</span>
             </Link>
-            <a className="utility-link" href="http://localhost:8081" target="_blank" rel="noreferrer">
-              <Database size={16} />
-              Open Adminer
-            </a>
-          </div>
+          ))}
+          {runs.length === 0 && !isRefreshing && <div className="empty"><p>No runs yet. Start one above.</p></div>}
         </div>
-      </section>
-
-      <section className="stats-grid">
-        <article className="stat-card">
-          <span className="stat-label">Runs</span>
-          <strong>{summary.total_runs}</strong>
-        </article>
-        <article className="stat-card">
-          <span className="stat-label">Leads</span>
-          <strong>{summary.total_leads}</strong>
-        </article>
-        <article className="stat-card">
-          <span className="stat-label">Active Processing</span>
-          <strong>{summary.active_leads}</strong>
-        </article>
-        <article className="stat-card">
-          <span className="stat-label">Draft Ready</span>
-          <strong>{summary.ready_to_send}</strong>
-        </article>
-      </section>
-
-      <section className="workspace">
-        <div className="panel command-panel" style={{ gridColumn: '1 / -1' }}>
-          <div className="panel-head">
-            <div>
-              <p className="eyebrow">Dispatch</p>
-              <h2>Create a new pipeline run</h2>
-            </div>
-          </div>
-          <form className="command-form" onSubmit={handleSubmit} style={{ maxWidth: '600px' }}>
-            <label className="field">
-              <span>Query or direct domain</span>
-              <input
-                className="text-input"
-                value={query}
-                onChange={(e) => setQuery(e.target.value)}
-                placeholder="boutique lifecycle marketing agency founder or retention.com"
-              />
-            </label>
-            <div className="control-row">
-              <label className="field compact-field">
-                <span>Company limit</span>
-                <input
-                  className="text-input"
-                  type="number"
-                  min={1}
-                  max={25}
-                  value={maxCompanies}
-                  onChange={(e) => setMaxCompanies(Number(e.target.value) || 1)}
-                />
-                <small className="supporting-text" style={{ marginTop: "0.35rem", display: "block" }}>
-                  Target draft-ready count. Search runs in multiple waves until this goal, then stops if results stall,
-                  Tavily has nothing new, or the run hits its lead-attempt cap (check run error when EXHAUSTED).
-                </small>
-              </label>
-              <button className="primary-button" type="submit" disabled={isSearching}>
-                {isSearching ? <RefreshCw size={18} className="animate-spin" /> : <Search size={18} />}
-                Start Run
-              </button>
-            </div>
-          </form>
-          {error && <div className="error-banner" style={{ marginTop: '1rem' }}>{error}</div>}
-        </div>
-
-        <div className="panel" style={{ gridColumn: '1 / -1' }}>
-          <div className="panel-head">
-            <div>
-              <p className="eyebrow">Activity</p>
-              <h2>Recent Runs</h2>
-            </div>
-            <Link href="/runs" className="utility-link">View All</Link>
-          </div>
-          <div className="lead-list" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', display: 'grid' }}>
-            {recentRuns.map((run) => {
-              const ready = run.ready_to_send_count ?? 0;
-              return (
-              <Link key={run.run_id} href={`/runs/${run.run_id}`} className="lead-item">
-                <div className="lead-item-top">
-                  <strong>{run.query}</strong>
-                  <span className={`status-badge status-${run.status}`}>{run.status}</span>
-                </div>
-                <div className="lead-item-meta" style={{ marginTop: '12px' }}>
-                  <span>
-                    {ready}/{run.requested_companies} draft-ready
-                  </span>
-                  <span>
-                    {run.discovered_companies} leads attempted · {run.processed_companies} finished
-                  </span>
-                </div>
-              </Link>
-              );
-            })}
-            {recentRuns.length === 0 && !isRefreshing && (
-              <div className="empty-state">
-                <p>No recent runs found.</p>
-              </div>
-            )}
-          </div>
-        </div>
-      </section>
+      </div>
     </main>
   );
 }

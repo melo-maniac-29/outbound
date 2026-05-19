@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { LayoutDashboard, Settings, Activity, Users } from "lucide-react";
+import ThemeToggle from "./theme-toggle";
 
 const navItems = [
   { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
@@ -25,11 +26,12 @@ export default function WorkspaceNav() {
 
         return (
           <Link key={item.href} href={item.href} className={`workspace-nav-link${isActive ? " is-active" : ""}`}>
-            <Icon size={16} />
+            <Icon size={14} />
             {item.label}
           </Link>
         );
       })}
+      <ThemeToggle />
     </nav>
   );
 }

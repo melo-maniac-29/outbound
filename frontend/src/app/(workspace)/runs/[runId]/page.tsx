@@ -3,224 +3,91 @@
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
-import { Activity, ArrowLeft, Building2, CheckCircle2, RefreshCw, Square, Trash2, User, Users } from "lucide-react";
+import { ArrowLeft, RefreshCw, Square, Trash2 } from "lucide-react";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+type Lead = { lead_id: string; company_name: string | null; domain: string | null; founder_name: string | null; email: string | null; status: string; };
+type RunDetail = { run_id: string; query: string; requested_companies: number; discovered_companies: number; processed_companies: number; ready_to_send_count?: number; source_type: string; status: string; error?: string | null; leads: Lead[]; };
 
-type Lead = {
-  lead_id: string;
-  company_name: string | null;
-  domain: string | null;
-  founder_name: string | null;
-  email: string | null;
-  status: string;
-};
-
-type RunDetail = {
-  run_id: string;
-  query: string;
-  requested_companies: number;
-  discovered_companies: number;
-  processed_companies: number;
-  ready_to_send_count?: number;
-  source_type: string;
-  status: string;
-  error?: string | null;
-  leads: Lead[];
-};
+function statusBadge(s: string) {
+  const m: Record<string, string> = { RUNNING: "badge-running", COMPLETED: "badge-completed", EXHAUSTED: "badge-failed", STOPPED: "badge-default", FAILED: "badge-failed", READY_TO_SEND: "badge-ready", DEAD_LEAD: "badge-dead" };
+  return `badge ${m[s] || "badge-default"}`;
+}
 
 export default function RunDetailPage() {
   const params = useParams<{ runId: string }>();
+  const router = useRouter();
   const [run, setRun] = useState<RunDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [working, setWorking] = useState(false);
-  const [message, setMessage] = useState<string | null>(null);
-  const [loadError, setLoadError] = useState<string | null>(null);
-  const router = useRouter();
+  const [msg, setMsg] = useState<string | null>(null);
+  const [err, setErr] = useState<string | null>(null);
 
-  useEffect(() => {
-    const load = async () => {
-      try {
-        const res = await fetch(`${API_URL}/api/runs/${params.runId}`);
-        if (!res.ok) {
-          const data = await res.json().catch(() => null);
-          throw new Error(data?.detail ?? `Run request failed with ${res.status}`);
-        }
-        const data = await res.json();
-        setRun(data);
-        setLoadError(null);
-      } catch (err) {
-        console.error(err);
-        setRun(null);
-        setLoadError(err instanceof Error ? err.message : "Failed to load run.");
-      } finally {
-        setLoading(false);
-      }
-    };
-    void load();
-  }, [params.runId]);
-
-  const refreshRun = async () => {
-    const res = await fetch(`${API_URL}/api/runs/${params.runId}`);
-    if (!res.ok) {
-      const data = await res.json().catch(() => null);
-      throw new Error(data?.detail ?? `Run request failed with ${res.status}`);
-    }
-    const data = await res.json();
-    setRun(data);
-  };
-
-  const stopRun = async () => {
-    setWorking(true);
-    setMessage(null);
+  const load = async () => {
     try {
-      const res = await fetch(`${API_URL}/api/runs/${params.runId}/stop`, { method: "POST" });
-      if (res.ok) {
-        setMessage("Run stop requested.");
-        await refreshRun();
-      } else {
-        const data = await res.json().catch(() => null);
-        setMessage(data?.detail ?? "Failed to stop run.");
-      }
-    } catch (err) {
-      console.error(err);
-      setMessage("Failed to stop run.");
-    } finally {
-      setWorking(false);
-    }
+      const res = await fetch(`${API_URL}/api/runs/${params.runId}`);
+      if (!res.ok) throw new Error((await res.json().catch(() => null))?.detail || "Not found");
+      setRun(await res.json()); setErr(null);
+    } catch (e) { setRun(null); setErr(e instanceof Error ? e.message : "Failed to load."); } finally { setLoading(false); }
   };
 
-  const deleteRun = async () => {
+  useEffect(() => { void load(); }, [params.runId]);
+
+  const stop = async () => {
+    setWorking(true); setMsg(null);
+    try { const r = await fetch(`${API_URL}/api/runs/${params.runId}/stop`, { method: "POST" }); setMsg(r.ok ? "Stop requested." : "Failed."); await load(); } catch { setMsg("Failed."); } finally { setWorking(false); }
+  };
+  const del = async () => {
     setWorking(true);
-    setMessage(null);
-    try {
-      const res = await fetch(`${API_URL}/api/runs/${params.runId}?purge_leads=true`, { method: "DELETE" });
-      if (res.ok) {
-        router.push("/dashboard");
-        router.refresh();
-        return;
-      }
-      const data = await res.json().catch(() => null);
-      setMessage(data?.detail ?? "Failed to delete run.");
-    } catch (err) {
-      console.error(err);
-      setMessage("Failed to delete run.");
-    } finally {
-      setWorking(false);
-    }
+    try { const r = await fetch(`${API_URL}/api/runs/${params.runId}?purge_leads=true`, { method: "DELETE" }); if (r.ok) { router.push("/runs"); return; } setMsg("Failed."); } catch { setMsg("Failed."); } finally { setWorking(false); }
   };
 
-  if (loading) {
-    return (
-      <main className="shell">
-        <div className="panel empty-state">
-          <RefreshCw className="animate-spin" />
-          Loading run...
-        </div>
-      </main>
-    );
-  }
+  if (loading) return <main className="shell"><div className="empty"><RefreshCw className="animate-spin" /> Loading...</div></main>;
+  if (!run) return <main className="shell"><div className="empty">{err || "Not found."}</div></main>;
 
-  if (!run) {
-    return (
-      <main className="shell">
-        <div className="panel empty-state">{loadError ?? "Run not found."}</div>
-      </main>
-    );
-  }
-
-  const draftReadyCount =
-    typeof run.ready_to_send_count === "number"
-      ? run.ready_to_send_count
-      : run.leads.filter((l) => l.status === "READY_TO_SEND").length;
+  const ready = typeof run.ready_to_send_count === "number" ? run.ready_to_send_count : run.leads.filter(l => l.status === "READY_TO_SEND").length;
 
   return (
     <main className="shell">
-      <section className="panel route-panel">
-        <Link href="/dashboard" className="back-link">
-          <ArrowLeft size={16} />
-          Back to dashboard
-        </Link>
+      <div className="page-header">
+        <Link href="/runs" className="back-link"><ArrowLeft size={14} /> Runs</Link>
         <p className="eyebrow">Run Detail</p>
-        <h1 className="route-title">{run.query}</h1>
-        <div className="route-meta-grid">
-          <div className="metric-box">
-            <Building2 size={16} />
-            <div>
-              <span>Company limit</span>
-              <strong>{run.requested_companies}</strong>
-            </div>
-          </div>
-          <div className="metric-box">
-            <CheckCircle2 size={16} />
-            <div>
-              <span>Draft-ready</span>
-              <strong>
-                {draftReadyCount}/{run.requested_companies}
-              </strong>
-            </div>
-          </div>
-          <div className="metric-box">
-            <Users size={16} />
-            <div>
-              <span>Leads attempted</span>
-              <strong>{run.discovered_companies}</strong>
-            </div>
-          </div>
-          <div className="metric-box">
-            <User size={16} />
-            <div>
-              <span>Pipeline finished</span>
-              <strong>{run.processed_companies}</strong>
-            </div>
-          </div>
-          <div className="metric-box">
-            <Activity size={16} />
-            <div>
-              <span>Status</span>
-              <strong>{run.status}</strong>
-            </div>
-          </div>
+        <h1>{run.query}</h1>
+        <div className="meta-row">
+          <span className={statusBadge(run.status)}>{run.status}</span>
+          {run.status === "RUNNING" && <button className="btn btn-danger" onClick={stop} disabled={working}><Square size={14} /> Stop</button>}
+          <button className="btn btn-ghost" onClick={del} disabled={working}><Trash2 size={14} /> Delete</button>
         </div>
-        <div className="action-row">
-          {run.status === "RUNNING" ? (
-            <button className="danger-button" type="button" onClick={stopRun} disabled={working}>
-              <Square size={16} />
-              Stop Run
-            </button>
-          ) : null}
-          <button className="danger-button ghost" type="button" onClick={deleteRun} disabled={working}>
-            <Trash2 size={16} />
-            Delete Run
-          </button>
-        </div>
-        {run.error && <div className="error-banner">{run.error}</div>}
-        {message && <div className="info-banner">{message}</div>}
-      </section>
+      </div>
 
-      <section className="panel">
-        <div className="panel-head">
-          <div>
-            <p className="eyebrow">Leads</p>
-            <h2>Leads from this run</h2>
-          </div>
+      {run.error && <div className="callout callout-error" style={{ marginBottom: 24 }}>{run.error}</div>}
+      {msg && <div className="callout callout-info" style={{ marginBottom: 24 }}>{msg}</div>}
+
+      <div className="surface-grid" style={{ marginBottom: 40 }}>
+        <div className="surface-cell"><p className="cell-label">Target</p><p className="cell-value">{run.requested_companies} companies</p></div>
+        <div className="surface-cell"><p className="cell-label">Draft-ready</p><p className="cell-value" style={{ color: "var(--teal)" }}>{ready}/{run.requested_companies}</p></div>
+        <div className="surface-cell"><p className="cell-label">Leads attempted</p><p className="cell-value">{run.discovered_companies}</p></div>
+        <div className="surface-cell"><p className="cell-label">Pipeline finished</p><p className="cell-value">{run.processed_companies}</p></div>
+      </div>
+
+      <div className="section">
+        <div className="section-head">
+          <h2 className="section-title">Leads ({run.leads.length})</h2>
         </div>
-        <div className="lead-list">
-          {run.leads.map((lead) => (
-            <Link key={lead.lead_id} href={`/leads/${lead.lead_id}`} className="lead-item">
-              <div className="lead-item-top">
-                <strong>{lead.company_name || lead.domain}</strong>
-                <span className={`status-badge status-${lead.status}`}>{lead.status.replaceAll("_", " ")}</span>
+        <div className="data-list">
+          {run.leads.map(lead => (
+            <Link key={lead.lead_id} href={`/leads/${lead.lead_id}`} className="data-row data-row-3col">
+              <div>
+                <span className="primary">{lead.company_name || lead.domain}</span>
+                <div className="secondary" style={{ marginTop: 2 }}>{lead.founder_name || "founder pending"} · {lead.email || "email pending"}</div>
               </div>
-              <p>{lead.domain}</p>
-              <div className="lead-item-meta">
-                <span>{lead.founder_name || "founder pending"}</span>
-                <span>{lead.email || "email pending"}</span>
-              </div>
+              <span className="mono">{lead.domain}</span>
+              <span className={statusBadge(lead.status)}>{lead.status.replaceAll("_", " ")}</span>
             </Link>
           ))}
+          {run.leads.length === 0 && <div className="empty"><p>No leads yet.</p></div>}
         </div>
-      </section>
+      </div>
     </main>
   );
 }
