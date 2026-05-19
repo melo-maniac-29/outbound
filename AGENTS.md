@@ -1,48 +1,59 @@
 # Agent Operating Rules
 
-You are working inside the outbound_agent repository.
+You are working inside the **Outbound Nexus** repository.
 
-Priorities:
+## Priorities
 
-- reliability and crash recovery over flashy architecture
-- local-first execution and minimal vendor dependencies
-- keep upgrade paths intact
+- Reliability and crash recovery over clever architecture
+- Local-first execution and minimal vendor dependencies
+- Keep upgrade paths intact
+- Non-blocking async: all sync I/O must run in `asyncio.to_thread()`
 
-Before making code changes:
+## Before making code changes
 
-1. Understand existing architecture
-2. Preserve LangGraph flow
-3. Preserve LeadState schema
+1. Understand the existing architecture — read `graph.py` and `main.py` first
+2. Preserve the LangGraph flow (`graph.py` → `compile_lead_graph`)
+3. Preserve `LeadState` schema in `state.py`
 4. Never rename public interfaces without reason
+5. Check `docs/pipeline.md` before touching any node
 
-When adding features:
+## Stack rules
 
-- prefer adding new nodes
-- avoid modifying existing nodes unless necessary
-- preserve backward compatibility
-- keep dependencies lean and explicit
+- LLM calls: direct `openai` SDK, JSON parsed with `_parse_json_response()` — **no LangChain structured outputs**
+- Database: PostgreSQL via `psycopg-pool` — **never replace with SQLite or another DB**
+- Real-time: Server-Sent Events (`StreamingResponse`) — **no WebSockets, no polling loops**
+- Frontend cache: `localStorage` for list pages — keys: `outbound_runs_cache`, `outbound_leads_cache`, `outbound_summary_cache`
 
-When debugging:
+## When adding features
 
-- identify root cause
-- propose minimal patch
-- explain tradeoffs
+- Prefer adding new nodes in `backend/nodes/`
+- Register the node in `graph.py` `compile_lead_graph()` and wire its edges
+- Avoid modifying existing nodes unless necessary
+- Keep dependencies lean — add to `requirements.txt` only when essential
 
-When refactoring:
+## When debugging
 
-- keep API stable
-- avoid unnecessary abstractions
+- Identify root cause before patching
+- Propose minimal patch
+- Explain tradeoffs
 
-When writing code:
+## When refactoring
 
-- code must run immediately
-- no placeholders
-- no TODO-only implementations
+- Keep REST API stable (`/api/*` endpoints)
+- Keep SSE contracts stable (`data:` JSON shape)
+- Avoid unnecessary abstractions
 
-Never:
+## When writing code
 
-- delete files without explicit instruction
-- replace SQLite with another DB
-- introduce new frameworks without justification
-- rewrite architecture
-- send real outreach emails from tests or examples
+- Code must run immediately — no placeholders, no TODO-only implementations
+- Sync functions that do I/O must be wrapped in `asyncio.to_thread()` when called from async context
+- Every node must handle its own exceptions and return a safe default — never crash the graph
+
+## Never
+
+- Delete files without explicit instruction
+- Replace PostgreSQL with another DB
+- Introduce new frameworks without justification
+- Send real outreach emails from tests, examples, or scripts
+- Commit `.env` files — they are git-ignored
+- Call blocking HTTP functions directly inside async functions

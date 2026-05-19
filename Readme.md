@@ -1,622 +1,248 @@
-# Outbound AI Outreach System
-**Architecture & Technical Documentation**  
-Assessment Submission · Allen Bobby
+# Outbound Nexus
 
-Primary docs:
+Automated lead discovery and personalized email drafting pipeline. Finds companies, crawls their websites, extracts founders, verifies emails, builds company profiles, and writes 3-email outreach sequences — all without human input until the draft is ready for review.
 
-- [End-to-end flow](docs/end-to-end.md)
-- [Architecture diagram](docs/outbound-architecture.excalidraw.json)
+**Nothing sends automatically.** Every lead stops at `READY_TO_SEND` for human approval before any email goes out.
 
 ---
 
-# 1. Overview
+## How it works
 
-This system takes Google-style search strings as input and produces personalized 3-email draft sequences for qualified leads.
-
-Current operating mode:
-
-- PostgreSQL is the source of truth for persistence
-- Gmail or SMTP sending is intentionally disabled for now
-- the pipeline stops at `READY_TO_SEND` for human review
-
-The system performs:
-
-- Agency discovery
-- Website crawling
-- Founder / decision-maker extraction
-- Email enrichment
-- Lead validation
-- Personalized outreach generation
-- Reserved follow-up states
-- State persistence with crash recovery
-
-Every lead maintains a persisted state throughout its lifecycle.
+1. Enter a search query (`"boutique B2B email marketing agencies"`) or paste a direct domain
+2. Tavily discovers matching company websites
+3. Pipeline crawls each site, extracts founder data, finds/guesses email addresses, builds a profile, writes 3 emails
+4. Dashboard shows real-time progress via Server-Sent Events — no refresh needed
+5. Open any lead, review signals and email drafts, then decide to send
 
 ---
 
-# 2. Design Philosophy
+## Stack
 
-This system intentionally prioritizes:
-
-- Reliability over visual complexity
-- Local-first execution where possible
-- Minimal vendor dependency
-- Explicit upgrade paths
-- Production-inspired fault tolerance
-
-Every tool is chosen for a specific engineering reason.
-
-No tool exists purely for "stack impressiveness."
-
----
-
-# 3. Final Stack
-
-| Tool | Purpose | Why | Cost |
-|---|---|---|---|
-| Tavily | Search / discovery | Native LangGraph integration, built for agents | Free tier |
-| Crawl4AI | Website crawling | Local, anti-bot, crash recovery, no API key | Free |
-| LangChain structured outputs | Structured extraction | Primary extraction path with heuristics fallback | Existing OpenAI key |
-| Hunter.io | Email enrichment | Domain -> verified email + confidence | Free tier |
-| OpenAI GPT-4o | Personalization + drafting | Structured reasoning + draft generation | Existing key |
-| LangGraph | Workflow orchestration | Stateful graphs, branching, checkpointing | Free |
-| PostgreSQL | State persistence | Reliable relational storage and upgrade-friendly | Free |
-| Manual review gate | Delivery control | No live send until the pipeline is stable | Free |
+| Layer | Tool | Why |
+|---|---|---|
+| Search / discovery | Tavily | Built for agents, returns clean URLs with context |
+| Website crawling | Crawl4AI + Playwright | Local, JS rendering, anti-bot, no API key or cost |
+| LLM | OpenAI-compatible API | Direct JSON parsing, no LangChain structured output fragility |
+| Email lookup | Hunter.io | Domain → verified email + confidence score |
+| Workflow | LangGraph | Typed state machine with conditional branching |
+| Database | PostgreSQL + psycopg-pool | Relational, crash recovery, connection pooling |
+| Backend API | FastAPI | Async, SSE streaming, background tasks |
+| Frontend | Next.js 15 | App Router, client-side localStorage cache |
+| Real-time | Server-Sent Events | Push-only, no WebSocket overhead, auto-reconnect |
+| Deployment | Docker Compose | Single command, isolated services |
 
 ---
 
-# 4. Architecture
+## Pipeline — node by node
 
-The system is implemented as a directed state graph using LangGraph.
+```
+START
+  ↓
+crawl_node              Playwright crawls ≤8 pages → single markdown blob
+  ↓
+extract_all_node        3 parallel GPT calls: founder + services + signals
+  ↓
+merge_extractions       Writes extracted data into LeadState
+  ↓
+◆ founder_confidence ≥ 0.75?
+  ├─ NO  → dead_lead_node → END
+  └─ YES → linkedin_lookup_node   Tavily → founder LinkedIn /in/ URL
+               ↓
+            enrich_node           Hunter.io email (skipped if site email ≥ 0.80)
+               ↓
+            build_profile_node    GPT → summary, positioning, outreach_angle
+               ↓
+            ◆ email_confidence ≥ 0.70?
+               ├─ NO  → pattern_guess_node   first.last@domain (conf 0.72)
+               └─ YES ↓
+                    validate_node    Final gate: founder ≥ 0.75 AND email ≥ 0.70
+                       ↓
+                    ◆ status == VALIDATED?
+                       ├─ NO  → END (dead lead)
+                       └─ YES → personalize_node   Picks best signal as hook
+                                    ↓
+                                 draft_node         GPT writes 3-email sequence
+                                    ↓
+                                 outreach_node      Sets READY_TO_SEND
+                                    ↓
+                                   END
+```
 
-Each node is:
-
-- Pure
-- Async
-- Independently testable
-- Writes only to shared LeadState
+For full node-by-node breakdown see [`docs/pipeline.md`](docs/pipeline.md).
 
 ---
 
-# 5. LeadState Schema
+## Multi-wave search
 
-```python
-class LeadState(BaseModel):
-    lead_id: str
+A single run targets N ready leads. The orchestrator runs in waves:
 
-    search_query: str
-    company_name: str | None
-    domain: str | None
+- Wave 1: search → crawl all discovered URLs in parallel → count how many hit `READY_TO_SEND`
+- If target not reached → search with a new query variant → repeat
+- Stops when: target hit (`COMPLETED`), search stalls 3 waves in a row (`EXHAUSTED`), or user clicks Stop
 
-    founder_name: str | None
-    founder_linkedin: str | None
-    founder_confidence: float = 0.0
+---
 
-    email: str | None
-    email_confidence: float = 0.0
+## Lead status flow
 
-    services: list[str] = []
-    signals: list[str] = []
-
-    source_url: str | None
-    source_type: str | None
-    extraction_timestamp: datetime | None
-
-    email_sequence: list[str] = []
-
-    retry_count: int = 0
-
-    status: LeadStatus
+```
+SEARCHED → CRAWLED → EXTRACTED → ENRICHED → VALIDATED → PERSONALIZED → READY_TO_SEND
+                                                                        ↘
+                                                                      DEAD_LEAD (any gate)
+                                                                      RETRY_PENDING (on error)
 ```
 
 ---
 
-# 6. LangGraph Node Architecture
+## Project structure
 
-## search_node
-
-Tool: Tavily
-
-Input:
-
-- search strings
-
-Output:
-
-- company URLs
-
-Example:
-
-"email marketing agency founder linkedin"
-
-Responsibilities:
-
-- Search discovery
-- URL normalization
-- Duplicate filtering
-
----
-
-## crawl_node
-
-Tool: Crawl4AI
-
-Input:
-
-- company URL
-
-Output:
-
-- clean markdown
-
-Responsibilities:
-
-- Page fetching
-- JS rendering
-- Anti-bot handling
-- Resume on crash
-
----
-
-## extract_node
-
-Tool: LangChain structured output + heuristics
-
-Input:
-
-- crawled markdown
-
-Prompt:
-
-"Extract founder name, linkedin, services, recent signals"
-
-Output:
-
-Structured JSON:
-
-```json
-{
-  "founder_name": "John Doe",
-  "linkedin": "...",
-  "services": [],
-  "signals": [],
-  "confidence": 0.84
-}
 ```
-
-Responsibilities:
-
-- Founder extraction
-- Signal extraction
-- Confidence scoring
-- Provenance capture
-
----
-
-## enrich_node
-
-Tool: Hunter.io
-
-Input:
-
-- domain
-
-Output:
-
-- verified emails
-- confidence scores
-
-Responsibilities:
-
-- Email enrichment
-- Pattern detection
-
----
-
-## pattern_guess_node
-
-Tool: Pure Python
-
-Runs only when Hunter confidence is insufficient.
-
-Patterns:
-
-- firstname@
-- firstname.lastname@
-- firstinitiallastname@
-
----
-
-## validate_node
-
-Tool: Pure Python
-
-Responsibilities:
-
-- Deduplication
-- Confidence threshold filtering
-- Completeness checks
-
-Thresholds:
-
-Founder:
-
->= 0.75
-
-Email:
-
->= 0.70
-
----
-
-## personalize_node
-
-Tool: GPT-4o
-
-Responsibilities:
-
-Select one relevant signal:
-
-Examples:
-
-- Recent hiring
-- New case study
-- Client announcement
-- Service expansion
-
-Returns:
-
-One personalization hook.
-
----
-
-## draft_node
-
-Tool: GPT-4o
-
-Responsibilities:
-
-Generate:
-
-- Email 1
-- Email 2
-- Email 3
-
-Constraints:
-
-- Under 100 words
-- No generic openings
-- Peer-to-peer tone
-- Specific signal in first email
-
----
-
-## outreach_node
-
-Tool: manual review gate
-
-Responsibilities:
-
-- keep the lead at `READY_TO_SEND`
-- do not send live mail yet
-- preserve the draft sequence for later approval
-
----
-
-# 7. Parallel Extraction
-
-To reduce latency, extraction tasks run in parallel.
-
-```text
-crawl_node
-    ↓
-extract_node
-    ↓
- ┌──────────────┬──────────────┬──────────────┐
- ↓              ↓              ↓
- founder        services       signals
- ↓              ↓              ↓
- └──────────────merge──────────┘
-```
-
-LangGraph merges outputs into LeadState.
-
----
-
-# 8. Conditional Edges
-
-```text
-extract_node
-    ↓
-founder_confidence >= 0.75 ?
-
-YES → enrich_node
-NO  → DEAD_LEAD
-
-
-enrich_node
-    ↓
-email_confidence >= 0.70 ?
-
-YES → validate_node
-NO  → pattern_guess_node
-
-
-validate_node
-    ↓
-complete data ?
-
-YES → personalize_node
-NO  → DEAD_LEAD
+outbound/
+├── AGENTS.md                   Agent operating rules
+├── docker-compose.yml
+├── backend/
+│   ├── main.py                 FastAPI app — REST + SSE endpoints + orchestration
+│   ├── graph.py                LangGraph state machine (nodes + edges)
+│   ├── state.py                LeadState schema + LeadStatus enum
+│   ├── requirements.txt
+│   ├── .env.example
+│   ├── db/
+│   │   └── models.py           PostgreSQL connection pool + all DB functions
+│   └── nodes/
+│       ├── search.py           Tavily discovery + URL filtering
+│       ├── crawl.py            Playwright multi-page crawler → markdown
+│       ├── extract.py          GPT extraction (founder, services, signals, emails)
+│       ├── linkedin_lookup.py  Tavily → LinkedIn /in/ URL
+│       ├── enrich.py           Hunter.io email lookup + pattern guesser
+│       ├── profile.py          GPT company profile synthesis
+│       ├── validate.py         Confidence gate
+│       ├── personalize.py      Signal picker
+│       ├── draft.py            GPT 3-email sequence writer
+│       └── outreach.py         Terminal step → READY_TO_SEND
+├── frontend/
+│   └── src/app/
+│       ├── (workspace)/
+│       │   ├── dashboard/      Run launcher + SSE live stats
+│       │   ├── runs/           Run history (SSE auto-refresh + localStorage cache)
+│       │   ├── runs/[runId]/   Run detail with live SSE lead tracking
+│       │   ├── leads/          Lead directory (SSE auto-refresh + localStorage cache)
+│       │   ├── leads/[leadId]/ Lead detail — signals, profile, email drafts, copy
+│       │   └── settings/       System prompt + search config
+│       └── page.tsx            Landing page
+├── docs/
+│   ├── pipeline.md             Full pipeline explanation
+│   └── pipeline.excalidraw.json  Visual diagram (generate with scripts/gen_diagram.py)
+└── scripts/
+    ├── e2e_search_run.py       End-to-end smoke test
+    └── gen_diagram.py          Generates pipeline.excalidraw.json
 ```
 
 ---
 
-# 9. Lead State Machine
+## API endpoints
 
-Every lead state is persisted.
+| Method | Endpoint | Description |
+|---|---|---|
+| `GET` | `/api/health` | Health check |
+| `POST` | `/api/search` | Start a search run (`query`, `max_companies`) |
+| `POST` | `/api/process-domain` | Start a single-domain run |
+| `GET` | `/api/runs` | List all runs (paginated) |
+| `GET` | `/api/runs/{id}` | Run detail with all leads |
+| `POST` | `/api/runs/{id}/stop` | Request run stop |
+| `DELETE` | `/api/runs/{id}` | Delete run and its leads |
+| `GET` | `/api/runs/{id}/stream` | **SSE** — live run + leads updates |
+| `GET` | `/api/leads` | List all leads (paginated) |
+| `GET` | `/api/leads/{id}` | Lead detail |
+| `DELETE` | `/api/leads/{id}` | Delete a terminal lead |
+| `GET` | `/api/summary` | Dashboard stats |
+| `GET` | `/api/stream/summary` | **SSE** — live dashboard stats + recent runs |
+| `GET` | `/api/settings` | Get system settings |
+| `PUT` | `/api/settings` | Update system prompt / search config |
 
-Crash recovery resumes from last checkpoint.
+---
 
-```text
-NEW
-↓
-SEARCHED
-↓
-CRAWLED
-↓
-EXTRACTED
-↓
-ENRICHED
-↓
-VALIDATED
-↓
-PERSONALIZED
-↓
-READY_TO_SEND
-↓
-SENT
-↓
-FOLLOWUP_1
-↓
-FOLLOWUP_2
-↓
-RESPONDED
+## Real-time updates (SSE)
 
-OR
+The frontend uses `EventSource` — a persistent HTTP connection that receives pushed JSON when anything changes. No polling, no WebSockets.
 
-DEAD_LEAD
+- **Dashboard** → `/api/stream/summary` → auto-updates stats and recent runs
+- **Run detail** → `/api/runs/{id}/stream` → auto-updates lead statuses as pipeline runs
+- **Runs list** → subscribes to `/api/stream/summary`, re-fetches full list on any change
+- **Leads list** → same as runs list
 
-OR
+All list pages cache their last data in `localStorage` — navigating back shows instant data before the next fetch completes.
 
-RETRY_PENDING
+---
+
+## Setup
+
+### Prerequisites
+
+- Docker + Docker Compose
+- A local OpenAI-compatible proxy or OpenAI API key
+- Tavily API key (free tier: [tavily.com](https://tavily.com))
+
+### 1. Clone and configure
+
+```bash
+git clone https://github.com/melo-maniac-29/outbound.git
+cd outbound
+cp backend/.env.example backend/.env
+```
+
+Edit `backend/.env`:
+
+```env
+TAVILY_API_KEY=tvly-...
+OPENAI_API_KEY=sk-...
+OPENAI_API_BASE=http://host.docker.internal:5005/v1   # if using local proxy
+OPENAI_MODEL_NAME=gpt-4
+HUNTER_API_KEY=                                        # optional, leave blank to skip
+DATABASE_URL=postgresql://outbound:outbound@postgres:5432/outbound
+```
+
+### 2. Start
+
+```bash
+docker compose up -d
+```
+
+Backend: `http://localhost:8000`  
+Frontend: `http://localhost:3000` (run separately, see below)
+
+### 3. Run frontend locally
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+### 4. Smoke test
+
+```bash
+python scripts/e2e_search_run.py --query "B2B SaaS email marketing agency" --max 3
 ```
 
 ---
 
-# 10. Retry Strategy
+## Design principles
 
-External APIs may rate limit.
-
-Retry policy:
-
-- Exponential backoff
-- Max retries: 3
-
-Backoff:
-
-1 sec
-
-2 sec
-
-4 sec
-
-On failure:
-
-Lead enters:
-
-RETRY_PENDING
-
-After retry exhaustion:
-
-DEAD_LEAD
+- **Reliability over cleverness** — direct OpenAI JSON parsing, no LangChain structured outputs
+- **Local-first** — Crawl4AI runs locally, no cloud crawl API
+- **Non-blocking** — all sync I/O runs in `asyncio.to_thread()` so FastAPI stays responsive
+- **Human review gate** — nothing sends until a human approves
+- **Minimal deps** — no Redis, no Celery, no message queue; PostgreSQL + asyncio is enough
 
 ---
 
-# 11. Observability
-
-Each node emits structured logs.
-
-Example:
-
-```json
-{
-  "lead_id": "...",
-  "node": "extract_node",
-  "latency_ms": 842,
-  "status": "success"
-}
-```
-
-Every lead has:
-
-- correlation ID
-- timestamps
-- retry counters
-
-Production upgrade:
-
-LangSmith can be added without graph redesign.
-
----
-
-# 12. Email Sequence
-
-The system still drafts a 3-email sequence, but it does not send live email yet.
-
-## Email 1 — Day 0
-
-Subject:
-
-Based on extracted signal.
-
-Template:
-
-Hi {first_name},
-
-Came across {company} and noticed {signal}.
-
-I'm building {product} and think it could create real value for your clients.
-
-Worth a 10-minute conversation this week?
-
-{sender}
-
----
-
-## Email 2 — Day 3
-
-Subject:
-
-Re: original subject
-
-Template:
-
-Hi {first_name},
-
-Wanted to follow up with something specific:
-
-{new insight}
-
-Happy to share more if useful.
-
-{sender}
-
----
-
-## Email 3 — Day 10
-
-Subject:
-
-Closing the loop
-
-Template:
-
-Hi {first_name},
-
-Just closing the loop.
-
-Still think there's a strong fit around {specific angle}.
-
-Open to a quick chat?
-
-{sender}
-
----
-
-# 13. Project Structure
-
-```text
-outbound_agent/
-├── main.py
-├── graph.py
-├── state.py
-├── nodes/
-│   ├── search.py
-│   ├── crawl.py
-│   ├── extract.py
-│   ├── enrich.py
-│   ├── validate.py
-│   ├── personalize.py
-│   ├── draft.py
-│   ├── outreach.py
-├── db/
-│   ├── models.py
-├── prompts/
-│   ├── email_system.txt
-└── requirements.txt
-```
-
----
-
-# 14. Intentional Exclusions
-
-## CrewAI
-
-Reason:
-
-Role-based agent conversations are unnecessary.
-
-This is a workflow graph.
-
----
-
-## Vector Database
-
-Reason:
-
-Data is relational.
-
-No semantic retrieval needed.
-
----
-
-## LangSmith
-
-Reason:
-
-Observability is useful but not essential for demo scope.
-
-Can be added later.
-
----
-
-## Firecrawl
-
-Reason:
-
-Cloud pricing and vendor dependency.
-
-Crawl4AI provides equivalent outputs locally.
-
----
-
-## SearXNG
-
-Reason:
-
-Better for production.
-
-Docker setup adds demo overhead.
-
-## Gmail SMTP
-
-Reason:
-
-Live delivery is deferred until the review-first pipeline is stable.
-
----
-
-# 15. Upgrade Path
-
-The architecture supports zero-redesign upgrades.
-
-Examples:
-
-PostgreSQL is already in place and should remain the default.
-
-Tavily → SearXNG
-
-manual review gate → Gmail SMTP or SendGrid when live sending is ready
-
-Structured logs → LangSmith
-
-All upgrades should stay isolated to a single node or config file.
-
----
-
-# 16. Final Design Principle
-
-This system is intentionally designed as:
-
-"Simple enough to demo. Strong enough to scale."
+## Upgrade path
+
+All upgrades are isolated to one node or config:
+
+| Current | Upgrade to | Change |
+|---|---|---|
+| Tavily | SearXNG (self-hosted) | `nodes/search.py` only |
+| Hunter.io | Apollo.io / Clearbit | `nodes/enrich.py` only |
+| `READY_TO_SEND` gate | Gmail SMTP / SendGrid | `nodes/outreach.py` only |
+| Console logs | LangSmith | `graph.py` lifespan only |
+| Single server | Multi-worker | Add Redis for SSE fan-out |
