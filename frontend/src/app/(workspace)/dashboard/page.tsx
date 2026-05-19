@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
-import { ArrowRight, RefreshCw, Search } from "lucide-react";
+import { ArrowRight, RefreshCw, Search, Wifi, WifiOff } from "lucide-react";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
@@ -20,71 +20,64 @@ export default function DashboardPage() {
   const [runs, setRuns] = useState<RunSummary[]>([]);
   const [summary, setSummary] = useState<Summary>({ total_leads: 0, active_leads: 0, ready_to_send: 0, dead_leads: 0, total_runs: 0 });
   const [isSearching, setIsSearching] = useState(false);
-  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [connected, setConnected] = useState(false);
   const [error, setError] = useState<string | null>(null);
-
-  // Guards: prevent overlapping requests
-  const inFlight = useRef(false);
-  const abortRef = useRef<AbortController | null>(null);
-
-  const refresh = async (signal?: AbortSignal) => {
-    if (inFlight.current) return;          // skip if already fetching
-    inFlight.current = true;
-    setIsRefreshing(true);
-    try {
-      const [sRes, rRes] = await Promise.all([
-        fetch(`${API_URL}/api/summary`, { signal }),
-        fetch(`${API_URL}/api/runs?limit=5`, { signal }),
-      ]);
-      if (sRes.ok) setSummary(await sRes.json());
-      if (rRes.ok) { const d = await rRes.json(); setRuns(d.runs ?? []); }
-      setError(null);
-    } catch (e) {
-      if (e instanceof Error && e.name === "AbortError") return;
-      setError("Backend unreachable.");
-    } finally {
-      inFlight.current = false;
-      setIsRefreshing(false);
-    }
-  };
+  const esRef = useRef<EventSource | null>(null);
 
   useEffect(() => {
-    const ac = new AbortController();
-    abortRef.current = ac;
+    let retryTimer: ReturnType<typeof setTimeout>;
 
-    void refresh(ac.signal);
+    const connect = () => {
+      // Close any existing connection
+      esRef.current?.close();
 
-    // Poll every 5s — slower when idle; faster (3s) when a run is active
-    let pollMs = 5000;
-    const schedule = () => {
-      const hasActive = runs.some(r => r.status === "RUNNING");
-      pollMs = hasActive ? 3000 : 6000;
-      return setTimeout(() => { void refresh(ac.signal); schedule(); }, pollMs);
+      const es = new EventSource(`${API_URL}/api/stream/summary`);
+      esRef.current = es;
+
+      es.onopen = () => { setConnected(true); setError(null); };
+
+      es.onmessage = (evt) => {
+        try {
+          const data = JSON.parse(evt.data);
+          if (data.summary) setSummary(data.summary);
+          if (Array.isArray(data.runs)) setRuns(data.runs);
+        } catch { /* ignore malformed */ }
+      };
+
+      es.onerror = () => {
+        setConnected(false);
+        es.close();
+        // Reconnect after 5 seconds
+        retryTimer = setTimeout(connect, 5000);
+      };
     };
-    const id = schedule();
+
+    connect();
 
     return () => {
-      ac.abort();
-      clearTimeout(id);
+      clearTimeout(retryTimer);
+      esRef.current?.close();
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!query.trim()) return;
     setIsSearching(true);
+    setError(null);
     try {
       const t = query.trim();
       const isDomain = !t.includes(" ") && t.includes(".");
       const ep = isDomain ? "/api/process-domain" : "/api/search";
       const body = isDomain ? { domain: t, label: t } : { query: t, max_companies: maxCompanies };
       const res = await fetch(`${API_URL}${ep}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
-      if (!res.ok) throw new Error();
+      if (!res.ok) throw new Error((await res.json().catch(() => null))?.detail || "Failed to start run.");
       setQuery("");
-      inFlight.current = false; // force next poll to run immediately
-      await refresh();
-    } catch { setError("Failed to start run."); } finally { setIsSearching(false); }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to start run.");
+    } finally {
+      setIsSearching(false);
+    }
   };
 
   const hasActiveRun = runs.some(r => r.status === "RUNNING");
@@ -95,12 +88,18 @@ export default function DashboardPage() {
         <p className="eyebrow">Dashboard</p>
         <h1>Dispatch Center</h1>
         <p>Start discovery runs and monitor pipeline progress.</p>
-        {hasActiveRun && (
-          <div style={{ marginTop: 12, display: "flex", alignItems: "center", gap: 8, fontSize: "0.82rem", color: "var(--teal)" }}>
-            <RefreshCw size={13} className="animate-spin" />
-            Pipeline running — auto-refreshing
-          </div>
-        )}
+        <div style={{ marginTop: 10, display: "flex", alignItems: "center", gap: 8, fontSize: "0.78rem" }}>
+          {connected ? (
+            <span style={{ color: "var(--teal)", display: "flex", alignItems: "center", gap: 5 }}>
+              <Wifi size={12} /> Live
+              {hasActiveRun && <><RefreshCw size={11} className="animate-spin" style={{ marginLeft: 4 }} /> Pipeline running</>}
+            </span>
+          ) : (
+            <span style={{ color: "var(--muted)", display: "flex", alignItems: "center", gap: 5 }}>
+              <WifiOff size={12} /> Reconnecting…
+            </span>
+          )}
+        </div>
       </div>
 
       <div className="stats-row">
@@ -130,7 +129,7 @@ export default function DashboardPage() {
           </div>
           <p className="form-hint" style={{ marginTop: 10 }}>Multi-wave search continues until this many leads reach draft-ready.</p>
         </form>
-        {error && <div className="callout callout-error">{error}</div>}
+        {error && <div className="callout callout-error" style={{ marginTop: 12 }}>{error}</div>}
       </div>
 
       <div className="section">
@@ -148,7 +147,8 @@ export default function DashboardPage() {
               <span className={statusBadge(run.status)}>{run.status}</span>
             </Link>
           ))}
-          {runs.length === 0 && !isRefreshing && <div className="empty"><p>No runs yet. Start one above.</p></div>}
+          {runs.length === 0 && !connected && <div className="empty"><p>Connecting…</p></div>}
+          {runs.length === 0 && connected && <div className="empty"><p>No runs yet. Start one above.</p></div>}
         </div>
       </div>
     </main>

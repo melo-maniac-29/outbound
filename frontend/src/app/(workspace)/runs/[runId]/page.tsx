@@ -3,9 +3,10 @@
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
-import { ArrowLeft, RefreshCw, Square, Trash2 } from "lucide-react";
+import { ArrowLeft, RefreshCw, Square, Trash2, Wifi, WifiOff } from "lucide-react";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+
 type Lead = { lead_id: string; company_name: string | null; domain: string | null; founder_name: string | null; email: string | null; status: string; };
 type RunDetail = { run_id: string; query: string; requested_companies: number; discovered_companies: number; processed_companies: number; ready_to_send_count?: number; source_type: string; status: string; error?: string | null; leads: Lead[]; };
 
@@ -20,47 +21,53 @@ export default function RunDetailPage() {
   const params = useParams<{ runId: string }>();
   const router = useRouter();
   const [run, setRun] = useState<RunDetail | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [connected, setConnected] = useState(false);
   const [working, setWorking] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
-
-  const inFlight = useRef(false);
-  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  const load = async (signal?: AbortSignal) => {
-    if (inFlight.current) return;
-    inFlight.current = true;
-    try {
-      const res = await fetch(`${API_URL}/api/runs/${params.runId}`, { signal });
-      if (!res.ok) throw new Error((await res.json().catch(() => null))?.detail || "Not found");
-      const data: RunDetail = await res.json();
-      setRun(data); setErr(null);
-      return data;
-    } catch (e) {
-      if (e instanceof Error && e.name === "AbortError") return null;
-      setRun(null); setErr(e instanceof Error ? e.message : "Failed to load.");
-      return null;
-    } finally {
-      inFlight.current = false;
-      setLoading(false);
-    }
-  };
+  const esRef = useRef<EventSource | null>(null);
 
   useEffect(() => {
-    const ac = new AbortController();
+    let retryTimer: ReturnType<typeof setTimeout>;
 
-    const poll = async () => {
-      const data = await load(ac.signal);
-      if (!data || TERMINAL.has(data.status)) return; // stop polling when done
-      timerRef.current = setTimeout(poll, 4000);
+    const connect = () => {
+      esRef.current?.close();
+      const es = new EventSource(`${API_URL}/api/runs/${params.runId}/stream`);
+      esRef.current = es;
+
+      es.onopen = () => { setConnected(true); setErr(null); };
+
+      es.onmessage = (evt) => {
+        try {
+          const data: RunDetail = JSON.parse(evt.data);
+          setRun(data);
+        } catch { /* ignore */ }
+      };
+
+      es.addEventListener("done", () => {
+        setConnected(false);
+        es.close();
+        // Fetch one final snapshot after stream closes
+        fetch(`${API_URL}/api/runs/${params.runId}`)
+          .then(r => r.json()).then(setRun).catch(() => null);
+      });
+
+      es.addEventListener("error", (evt: Event & { data?: string }) => {
+        if (evt instanceof MessageEvent) {
+          try { const d = JSON.parse(evt.data); setErr(d.detail || "Stream error"); } catch { setErr("Stream error"); }
+          es.close(); return;
+        }
+        setConnected(false);
+        es.close();
+        retryTimer = setTimeout(connect, 5000);
+      });
     };
 
-    void poll();
+    connect();
 
     return () => {
-      ac.abort();
-      if (timerRef.current) clearTimeout(timerRef.current);
+      clearTimeout(retryTimer);
+      esRef.current?.close();
     };
   }, [params.runId]);
 
@@ -69,9 +76,6 @@ export default function RunDetailPage() {
     try {
       const r = await fetch(`${API_URL}/api/runs/${params.runId}/stop`, { method: "POST" });
       setMsg(r.ok ? "Stop requested." : "Failed.");
-      if (timerRef.current) clearTimeout(timerRef.current);
-      inFlight.current = false;
-      await load();
     } catch { setMsg("Failed."); } finally { setWorking(false); }
   };
 
@@ -80,12 +84,23 @@ export default function RunDetailPage() {
     try {
       const r = await fetch(`${API_URL}/api/runs/${params.runId}?purge_leads=true`, { method: "DELETE" });
       if (r.ok) { router.push("/runs"); return; }
-      setMsg("Failed.");
+      setMsg("Failed to delete.");
     } catch { setMsg("Failed."); } finally { setWorking(false); }
   };
 
-  if (loading) return <main className="shell"><div className="empty"><RefreshCw className="animate-spin" /> Loading...</div></main>;
-  if (!run) return <main className="shell"><div className="empty">{err || "Not found."}</div></main>;
+  if (!run && !err) return (
+    <main className="shell">
+      <div className="empty" style={{ display: "flex", alignItems: "center", gap: 10 }}>
+        <RefreshCw className="animate-spin" size={16} /> Connecting to stream…
+      </div>
+    </main>
+  );
+
+  if (err && !run) return (
+    <main className="shell"><div className="empty">{err}</div></main>
+  );
+
+  if (!run) return null;
 
   const ready = typeof run.ready_to_send_count === "number" ? run.ready_to_send_count : run.leads.filter(l => l.status === "READY_TO_SEND").length;
   const isRunning = run.status === "RUNNING";
@@ -98,11 +113,9 @@ export default function RunDetailPage() {
         <h1>{run.query}</h1>
         <div className="meta-row">
           <span className={statusBadge(run.status)}>{run.status}</span>
-          {isRunning && (
-            <span style={{ display: "flex", alignItems: "center", gap: 6, fontSize: "0.78rem", color: "var(--teal)" }}>
-              <RefreshCw size={12} className="animate-spin" /> live
-            </span>
-          )}
+          <span style={{ fontSize: "0.75rem", display: "flex", alignItems: "center", gap: 5, color: connected ? "var(--teal)" : "var(--muted)" }}>
+            {connected ? <><Wifi size={11} /> live</> : <><WifiOff size={11} /> offline</>}
+          </span>
           {isRunning && <button className="btn btn-danger" onClick={stop} disabled={working}><Square size={14} /> Stop</button>}
           <button className="btn btn-ghost" onClick={del} disabled={working}><Trash2 size={14} /> Delete</button>
         </div>
@@ -127,7 +140,9 @@ export default function RunDetailPage() {
             <Link key={lead.lead_id} href={`/leads/${lead.lead_id}`} className="data-row data-row-3col">
               <div>
                 <span className="primary">{lead.company_name || lead.domain}</span>
-                <div className="secondary" style={{ marginTop: 2 }}>{lead.founder_name || "founder pending"} · {lead.email || "email pending"}</div>
+                <div className="secondary" style={{ marginTop: 2 }}>
+                  {lead.founder_name || "founder pending"} · {lead.email || "email pending"}
+                </div>
               </div>
               <span className="mono">{lead.domain}</span>
               <span className={statusBadge(lead.status)}>{lead.status.replaceAll("_", " ")}</span>

@@ -1,3 +1,5 @@
+import asyncio
+import json
 import uuid
 from contextlib import asynccontextmanager
 from urllib.parse import urlparse
@@ -5,7 +7,9 @@ from urllib.parse import urlparse
 from dotenv import load_dotenv
 from fastapi import BackgroundTasks, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
+
 
 load_dotenv()
 
@@ -522,6 +526,93 @@ def update_settings(req: SettingsRequest):
     if req.search_variant_limit is not None:
         update_setting("search_variant_limit", req.search_variant_limit)
     return get_settings()
+
+
+@app.get("/api/runs/{run_id}/stream")
+async def stream_run(run_id: str):
+    """SSE endpoint — pushes run+leads updates only when state changes."""
+    from db.models import fetch_run
+
+    TERMINAL = {"COMPLETED", "EXHAUSTED", "STOPPED", "FAILED"}
+
+    async def event_generator():
+        last_payload: str | None = None
+        heartbeat_ticks = 0
+
+        while True:
+            run = fetch_run(run_id)
+            if run is None:
+                yield "event: error\ndata: {\"detail\": \"Run not found\"}\n\n"
+                return
+
+            payload = json.dumps(run, default=str)
+            if payload != last_payload:
+                last_payload = payload
+                yield f"data: {payload}\n\n"
+
+            status = run.get("status", "")
+            if status in TERMINAL:
+                yield "event: done\ndata: {}\n\n"
+                return
+
+            # heartbeat every ~15s to prevent proxy/browser timeouts
+            heartbeat_ticks += 1
+            if heartbeat_ticks % 5 == 0:
+                yield ": heartbeat\n\n"
+
+            await asyncio.sleep(3)
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
+    )
+
+
+@app.get("/api/stream/summary")
+async def stream_summary():
+    """SSE endpoint — pushes dashboard summary + recent runs only when changed."""
+    from db.models import fetch_runs, fetch_summary
+
+    async def event_generator():
+        last_payload: str | None = None
+        heartbeat_ticks = 0
+
+        while True:
+            try:
+                summary = fetch_summary()
+                runs_data = fetch_runs(limit=5)
+                combined = {"summary": summary, "runs": runs_data}
+                payload = json.dumps(combined, default=str)
+                if payload != last_payload:
+                    last_payload = payload
+                    yield f"data: {payload}\n\n"
+            except Exception:
+                yield ": db-error\n\n"
+
+            heartbeat_ticks += 1
+            if heartbeat_ticks % 5 == 0:
+                yield ": heartbeat\n\n"
+
+            # Slower when no active runs, faster when something is running
+            has_active = any(
+                r.get("status") == "RUNNING" for r in (runs_data if "runs_data" in dir() else [])
+            )
+            await asyncio.sleep(3 if has_active else 8)
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
+    )
 
 
 @app.get("/api/health")
